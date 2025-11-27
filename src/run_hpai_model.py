@@ -8,7 +8,7 @@ seed = 0
 np.random.seed(seed)
 run_mcmc = False
 use_mcmc = False
-run_projections = True
+run_projections = False
 data_start = pd.to_datetime('2022-10-01')
 data_end = pd.to_datetime('2023-09-30')
 
@@ -34,14 +34,21 @@ modelfit = hpai_model.ModelFitting(model)
 if run_mcmc:
     modelfit.run_mcmc_chain(save_iter=np.array([11000, 51000, 210000]))
 
+if use_mcmc:
+    modelfit.load_chains(chain_numbers=[0])
+    modelsim = hpai_model.ModelSimulator(modelfit, reps=2)
+else:
+    modelsim = hpai_model.ModelSimulator(model, reps=2)
+
 if run_projections:
-    if use_mcmc:
-        modelfit.load_chains(chain_numbers=[0])
-        modelsim = hpai_model.ModelSimulator(modelfit, reps=2)
-    else:
-        modelsim = hpai_model.ModelSimulator(model, reps=2)
     modelsim.run_model()
     modelsim.save_projections()
+else:
+    modelsim.load_projections()
+
+modelplotting = hpai_model.Plotting(modelfit, modelsim)
+modelplotting.plot_projections()
+plt.show()
 
 # fig, ax = plt.subplots(4, 4, figsize=(16, 16))
 # for i in range(16):

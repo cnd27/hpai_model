@@ -1401,7 +1401,7 @@ class ModelSimulator:
         """Save the projections to files."""
         np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_day.npy', self.report_day_projections)
         np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_premises.npy', self.report_premises_projections)
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy', self.report_rep_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy', self.report_rep_projections.astype(int))
         np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_time.npy', self.report_time_projections)
 
     def load_projections(self, dir='../outputs/'):
@@ -1411,6 +1411,70 @@ class ModelSimulator:
         self.report_rep_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy')
         self.report_time_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_time.npy')
 
+class Plotting:
+    def __init__(self, model_fitting=None, model_simulator=None):
+        if model_fitting is not None:
+            self.model_fitting = model_fitting
+            self.model_structure = model_fitting.model_structure
+        if model_simulator is not None:
+            self.model_simulator = model_simulator
+            self.model_structure = model_simulator.model_structure
+
+    def plot_parameter_chains(self):
+        """Plot MCMC chains for parameters."""
+        if self.model_fitting is None:
+            raise ValueError("model_fitting is required to plot parameter chains.")
+        n_parameters = self.model_fitting.parameter_posterior.shape[1]
+        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))), figsize=(10, 10))
+        i = 0
+        for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+            for j in range(np.sum(par.fitted)):
+                ax[i].plot(self.model_fitting.parameter_chains[:, i + j], label=f'{par_name}_{j}')
+                ax[i].set_title(f'{par_name}_{j}')
+                ax[i].set_xlabel('Iteration')
+                ax[i].set_ylabel('Value')
+                ax[i].legend()
+            i += np.sum(par.fitted)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_parameter_posteriors(self):
+        """Plot posterior distributions for parameters."""
+        if self.model_fitting is None:
+            raise ValueError("model_fitting is required to plot parameter posteriors.")
+        n_parameters = self.model_fitting.parameter_posterior.shape[1]
+        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))), figsize=(10, 10))
+        i = 0
+        for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+            for j in range(np.sum(par.fitted)):
+                ax[i].hist(self.model_fitting.parameter_posterior[:, i + j], bins=30, density=True, alpha=0.7)
+                ax[i].set_title(f'{par_name}_{j}')
+                ax[i].set_xlabel('Value')
+                ax[i].set_ylabel('Density')
+            i += np.sum(par.fitted)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_projections(self):
+        """Plot simulation projections of weekly notified premises."""
+        if self.model_simulator is None:
+            raise ValueError("model_simulator is required to plot projections.")
+        plt.figure(figsize=(10, 6))
+        weeks = np.ceil(self.model_simulator.report_day_projections / 7).astype(int) - 1
+        n_weeks = np.max(weeks + 1)
+        n_reps = len(np.unique(self.model_simulator.report_rep_projections))
+        ips_array = np.zeros((n_reps, n_weeks), dtype=int)
+        np.add.at(ips_array, (self.model_simulator.report_rep_projections.astype(int), weeks), 1)
+
+        mean_ips = np.mean(ips_array, axis=0)
+        lower_ci = np.percentile(ips_array, 2.5, axis=0)
+        upper_ci = np.percentile(ips_array, 97.5, axis=0)
+
+        plt.fill_between(range(n_weeks), lower_ci, upper_ci, color='lightblue', alpha=0.5, label='95% Credible Interval')
+        plt.plot(range(n_weeks), mean_ips, color='blue', label='Mean Weekly IPs')
+
+        plt.xlabel('Report Day')
+        plt.ylabel('Weekly IPs')
 
 @njit
 def cauchy_kernel(distance2, delta, omega):
