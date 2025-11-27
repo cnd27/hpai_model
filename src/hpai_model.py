@@ -966,10 +966,10 @@ class ModelFitting:
             if save:
                 self.save_chain(iter + 1)
 
-    def save_chain(self, length_of_chain):
+    def save_chain(self, length_of_chain, dir='../outputs/'):
         """Save the MCMC chains to files."""
-        np.save(f'mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_neg_log_post.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
-        np.save(f'mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_parameters.npy', self.parameter_chain[:, :(length_of_chain + 1)])
+        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_neg_log_post.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
+        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_parameters.npy', self.parameter_chain[:, :(length_of_chain + 1)])
         #Convert premises_chain and transition_chain to arrays before saving
         max_length = max(len(arr) for arr in self.premises_chain[:(length_of_chain + 1)])
         premises_array = np.full((length_of_chain + 1, max_length), np.inf, dtype=float)
@@ -978,10 +978,10 @@ class ModelFitting:
             premises_array[i, :len(arr)] = arr
         for i, arr in enumerate(self.transition_chain[:(length_of_chain + 1)]):
             transition_array[i, :len(arr)] = arr
-        np.save(f'mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_premises.npy', premises_array)
-        np.save(f'mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_transitions.npy', transition_array)
+        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_premises.npy', premises_array)
+        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_transitions.npy', transition_array)
 
-    def load_chains(self, chain_numbers, values_per_chain=1000):
+    def load_chains(self, chain_numbers, values_per_chain=1000, dir='../outputs/'):
         """Load MCMC chains from files."""
         n_chains = len(chain_numbers)
         n_parameters = sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values())
@@ -990,10 +990,10 @@ class ModelFitting:
         premises_chains_tmp = [None for _ in range(n_chains)]
         transition_chains_tmp = [None for _ in range(n_chains)]
         for i in range(n_chains):
-            self.neg_log_posterior_chains[i] = np.load(f'mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_neg_log_post.npy')
-            self.parameter_chains[i] = np.load(f'mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_parameters.npy')
-            premises_chains_tmp[i] = np.load(f'mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_premises.npy')
-            transition_chains_tmp[i] = np.load(f'mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_transitions.npy')
+            self.neg_log_posterior_chains[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_neg_log_post.npy')
+            self.parameter_chains[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_parameters.npy')
+            premises_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_premises.npy')
+            transition_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_transitions.npy')
         max_length = max(arr.shape[1] for arr in premises_chains_tmp)
         self.premises_chains = np.inf * np.ones((n_chains, self.total_iterations + 1, max_length))
         self.transition_chains = np.inf * np.ones((n_chains, self.total_iterations + 1, max_length))
@@ -1397,19 +1397,19 @@ class ModelSimulator:
         else:
             raise ValueError("Only initial_condition_type 0 (initial infected from posterior) is currently implemented.")
 
-    def save_projections(self):
+    def save_projections(self, dir='../outputs/'):
         """Save the projections to files."""
-        np.save(f'simulation_{self.model_structure.chain_string}_report_day.npy', self.report_day_projections)
-        np.save(f'simulation_{self.model_structure.chain_string}_report_premises.npy', self.report_premises_projections)
-        np.save(f'simulation_{self.model_structure.chain_string}_report_rep.npy', self.report_rep_projections)
-        np.save(f'simulation_{self.model_structure.chain_string}_report_time.npy', self.report_time_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_day.npy', self.report_day_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_premises.npy', self.report_premises_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy', self.report_rep_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_time.npy', self.report_time_projections)
 
-    def load_projections(self):
+    def load_projections(self, dir='../outputs/'):
         """Load projections."""
-        self.report_day_projections = np.load(f'simulation_{self.model_structure.chain_string}_report_day.npy')
-        self.report_premises_projections = np.load(f'simulation_{self.model_structure.chain_string}_report_premises.npy')
-        self.report_rep_projections = np.load(f'simulation_{self.model_structure.chain_string}_report_rep.npy')
-        self.report_time_projections = np.load(f'simulation_{self.model_structure.chain_string}_report_time.npy')
+        self.report_day_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_day.npy')
+        self.report_premises_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_premises.npy')
+        self.report_rep_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy')
+        self.report_time_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_time.npy')
 
 
 @njit
