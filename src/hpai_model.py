@@ -13,7 +13,7 @@ from matplotlib.lines import Line2D
 import copy
 import geopandas as gpd
 from shapely.geometry import Point
-from numba import njit
+# from numba import njit
 
 
 class DataFilePaths:
@@ -1530,13 +1530,13 @@ class Plotting:
         plt.ylabel('Weekly IPs')
         plt.show()
 
-@njit
+# @njit
 def cauchy_kernel(distance2, delta, omega):
     """Numba-compiled Cauchy kernel calculation."""
     base = delta * delta + distance2
     return delta * (base ** -omega)
 
-@njit
+# @njit
 def exp_kernel(distance2, delta):
     """Numba-compiled Exponential kernel calculation."""
     return np.exp(-np.sqrt(distance2) * delta)

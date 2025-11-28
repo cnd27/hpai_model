@@ -34,7 +34,8 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python src/run_hpai_model.py 
+cd src
+python3 run_hpai_model.py 
 ```
 
 ---

@@ -9,9 +9,9 @@ np.random.seed(seed)
 # Choose options for running the model
 run_mcmc = False
 use_mcmc = True
-run_projections = True
+run_projections = False
 sellke = False
-plots = False
+plots = True
 
 # Define time period
 data_start = pd.to_datetime('2022-10-01')
