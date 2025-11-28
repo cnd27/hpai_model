@@ -1438,49 +1438,33 @@ class Plotting:
         if self.model_fitting is None:
             raise ValueError("model_fitting is required to plot parameter chains.")
         n_parameters = self.model_fitting.parameter_posterior.shape[1]
-        fig, ax = plt.subplots(4, 4, figsize=(16, 16))
-        for i in range(16):
-            row = i // 4
-            col = i % 4
-            ax[row, col].plot(self.model_fitting.parameter_chains[0, i, :])
+        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
+        i = 0
+        for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+            for j in range(np.sum(par.fitted)):
+                row = i // ax.shape[1]
+                col = i % ax.shape[1]
+                ax[row, col].plot(self.model_fitting.parameter_chains[:, i, :].T, label=f'{par_name}_{j}')
+                ax[row, col].set_title(f'$\\{par_name}_{j}$')
+                i += 1
         plt.tight_layout()
-        plt.show()
-        # fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
-        # i = 0
-        # for par_name, par in self.model_structure.parameters.fitted_parameters().items():
-        #     for j in range(np.sum(par.fitted)):
-        #         row = i // ax.shape[1]
-        #         col = i % ax.shape[1]
-        #         ax[i].plot(self.model_fitting.parameter_chains[:, i + j], label=f'{par_name}_{j}')
-        #         ax[i].set_title(f'{par_name}_{j}')
-        #         ax[i].set_xlabel('Iteration')
-        #         ax[i].set_ylabel('Value')
-        #         ax[i].legend()
-        #     i += np.sum(par.fitted)
-        # plt.tight_layout()
 
     def plot_parameter_posteriors(self):
         """Plot posterior distributions for parameters."""
         if self.model_fitting is None:
             raise ValueError("model_fitting is required to plot parameter posteriors.")
         n_parameters = self.model_fitting.parameter_posterior.shape[1]
-        fig, ax = plt.subplots(4, 4, figsize=(16, 16))
-        for i in range(16):
-            row = i // 4
-            col = i % 4
-            ax[row, col].hist(self.model_fitting.parameter_posterior[:, i])
+        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
+        i = 0
+        for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+            for j in range(np.sum(par.fitted)):
+                row = i // ax.shape[1]
+                col = i % ax.shape[1]
+                ax[row, col].hist(self.model_fitting.parameter_posterior[:, i], bins=50, density=True, alpha=0.7)
+                ax[row, col].set_title(f'$\\{par_name}_{j}$')
+                i += 1
         plt.tight_layout()
         plt.show()
-        # fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))), figsize=(10, 10))
-        # i = 0
-        # for par_name, par in self.model_structure.parameters.fitted_parameters().items():
-        #     for j in range(np.sum(par.fitted)):
-        #         ax[i].hist(self.model_fitting.parameter_posterior[:, i + j], bins=30, density=True, alpha=0.7)
-        #         ax[i].set_title(f'{par_name}_{j}')
-        #         ax[i].set_xlabel('Value')
-        #         ax[i].set_ylabel('Density')
-        #     i += np.sum(par.fitted)
-        # plt.tight_layout()
 
     def plot_projections(self):
         """Plot simulation projections of weekly notified premises."""
