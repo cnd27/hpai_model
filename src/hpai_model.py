@@ -968,18 +968,18 @@ class ModelFitting:
 
     def save_chain(self, length_of_chain, dir='../outputs/'):
         """Save the MCMC chains to files."""
-        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_neg_log_post.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
-        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_parameters.npy', self.parameter_chain[:, :(length_of_chain + 1)])
+        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{self.chain_number}.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
+        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_parameters_{self.chain_number}.npy', self.parameter_chain[:, :(length_of_chain + 1)])
         #Convert premises_chain and transition_chain to arrays before saving
         max_length = max(len(arr) for arr in self.premises_chain[:(length_of_chain + 1)])
-        premises_array = np.full((length_of_chain + 1, max_length), np.inf, dtype=float)
-        transition_array = np.full((length_of_chain + 1, max_length), np.inf, dtype=float)
+        premises_array = np.full((max_length, length_of_chain + 1), np.inf, dtype=float)
+        transition_array = np.full((max_length, length_of_chain + 1), np.inf, dtype=float)
         for i, arr in enumerate(self.premises_chain[:(length_of_chain + 1)]):
-            premises_array[i, :len(arr)] = arr
+            premises_array[:len(arr), i] = arr
         for i, arr in enumerate(self.transition_chain[:(length_of_chain + 1)]):
-            transition_array[i, :len(arr)] = arr
-        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_premises.npy', premises_array)
-        np.save(f'{dir}mcmc_chain_{self.chain_number}_{self.model_structure.chain_string}_transitions.npy', transition_array)
+            transition_array[:len(arr), i] = arr
+        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_premises_{self.chain_number}.npy', premises_array)
+        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_transitions_{self.chain_number}.npy', transition_array)
 
     def load_chains(self, chain_numbers, values_per_chain=1000, dir='../outputs/'):
         """Load MCMC chains from files."""
@@ -990,23 +990,23 @@ class ModelFitting:
         premises_chains_tmp = [None for _ in range(n_chains)]
         transition_chains_tmp = [None for _ in range(n_chains)]
         for i in range(n_chains):
-            self.neg_log_posterior_chains[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_neg_log_post.npy')
-            self.parameter_chains[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_parameters.npy')
-            premises_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_premises.npy')
-            transition_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{chain_numbers[i]}_{self.model_structure.chain_string}_transitions.npy')
-        max_length = max(arr.shape[1] for arr in premises_chains_tmp)
-        self.premises_chains = np.inf * np.ones((n_chains, self.total_iterations + 1, max_length))
-        self.transition_chains = np.inf * np.ones((n_chains, self.total_iterations + 1, max_length))
+            self.neg_log_posterior_chains[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{chain_numbers[i]}.npy')
+            self.parameter_chains[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_parameters_{chain_numbers[i]}.npy')
+            premises_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_premises_{chain_numbers[i]}.npy')
+            transition_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_transitions_{chain_numbers[i]}.npy')
+        max_length = max(arr.shape[0] for arr in premises_chains_tmp)
+        self.premises_chains = np.inf * np.ones((n_chains, max_length, self.total_iterations + 1))
+        self.transition_chains = np.inf * np.ones((n_chains, max_length, self.total_iterations + 1))
         for i in range(n_chains):
-            max_length_i = premises_chains_tmp[i].shape[1]
-            self.premises_chains[i, :, :max_length_i] = premises_chains_tmp[i][:10999, :]
-            self.transition_chains[i, :, :max_length_i] = transition_chains_tmp[i][:10999, :]
+            max_length_i = premises_chains_tmp[i].shape[0]
+            self.premises_chains[i, :max_length_i, :] = premises_chains_tmp[i]
+            self.transition_chains[i, :max_length_i, :] = transition_chains_tmp[i]
         choose_samples = np.arange(self.burn_in + 1, self.total_iterations + 1,
                                    (self.total_iterations - self.burn_in - 1) / (values_per_chain - 1)).astype(int)
         self.neg_log_posterior_posterior = self.neg_log_posterior_chains[:, choose_samples].flatten()
         self.parameter_posterior = self.parameter_chains[:, :, choose_samples].transpose(0, 2, 1).reshape(n_chains * values_per_chain, n_parameters)
-        self.premises_posterior = self.premises_chains[:, choose_samples, :].reshape(n_chains * values_per_chain, max_length)
-        self.transition_posterior = self.transition_chains[:, choose_samples, :].reshape(n_chains * values_per_chain, max_length)
+        self.premises_posterior = self.premises_chains[:, :, choose_samples].transpose(0, 2, 1).reshape(n_chains * values_per_chain, max_length)
+        self.transition_posterior = self.transition_chains[:, :, choose_samples].transpose(0, 2, 1).reshape(n_chains * values_per_chain, max_length)
 
     def update_chain(self, current_neg_log_post):
         """Update the MCMC chain with the current parameter values and likelihoods."""
@@ -1228,7 +1228,7 @@ class ModelSimulator:
         else:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
 
-    def run_model(self):
+    def run_model(self, save_results=True):
         for rep in range(self.reps):
             print(f"Simulation {rep + 1} of {self.reps}")
             if self.sellke:
@@ -1268,6 +1268,8 @@ class ModelSimulator:
             report_length = len(reports)
             self.report_rep_projections = np.append(self.report_rep_projections, np.full(report_length, i, dtype=int))
         self.report_time_projections = self.report_day_projections - (np.concatenate(self.exposure_day) + self.model_structure.transitions[0])
+        if save_results:
+            self.save_projections()
 
     def update_day(self, day, rep):
         season_time = self.model_structure.get_season_times(day)
@@ -1425,35 +1427,49 @@ class Plotting:
         if self.model_fitting is None:
             raise ValueError("model_fitting is required to plot parameter chains.")
         n_parameters = self.model_fitting.parameter_posterior.shape[1]
-        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))), figsize=(10, 10))
-        i = 0
-        for par_name, par in self.model_structure.parameters.fitted_parameters().items():
-            for j in range(np.sum(par.fitted)):
-                ax[i].plot(self.model_fitting.parameter_chains[:, i + j], label=f'{par_name}_{j}')
-                ax[i].set_title(f'{par_name}_{j}')
-                ax[i].set_xlabel('Iteration')
-                ax[i].set_ylabel('Value')
-                ax[i].legend()
-            i += np.sum(par.fitted)
+        fig, ax = plt.subplots(4, 4, figsize=(16, 16))
+        for i in range(16):
+            row = i // 4
+            col = i % 4
+            ax[row, col].plot(self.model_fitting.parameter_chains[0, i, :])
         plt.tight_layout()
         plt.show()
+        # fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
+        # i = 0
+        # for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+        #     for j in range(np.sum(par.fitted)):
+        #         row = i // ax.shape[1]
+        #         col = i % ax.shape[1]
+        #         ax[i].plot(self.model_fitting.parameter_chains[:, i + j], label=f'{par_name}_{j}')
+        #         ax[i].set_title(f'{par_name}_{j}')
+        #         ax[i].set_xlabel('Iteration')
+        #         ax[i].set_ylabel('Value')
+        #         ax[i].legend()
+        #     i += np.sum(par.fitted)
+        # plt.tight_layout()
 
     def plot_parameter_posteriors(self):
         """Plot posterior distributions for parameters."""
         if self.model_fitting is None:
             raise ValueError("model_fitting is required to plot parameter posteriors.")
         n_parameters = self.model_fitting.parameter_posterior.shape[1]
-        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))), figsize=(10, 10))
-        i = 0
-        for par_name, par in self.model_structure.parameters.fitted_parameters().items():
-            for j in range(np.sum(par.fitted)):
-                ax[i].hist(self.model_fitting.parameter_posterior[:, i + j], bins=30, density=True, alpha=0.7)
-                ax[i].set_title(f'{par_name}_{j}')
-                ax[i].set_xlabel('Value')
-                ax[i].set_ylabel('Density')
-            i += np.sum(par.fitted)
+        fig, ax = plt.subplots(4, 4, figsize=(16, 16))
+        for i in range(16):
+            row = i // 4
+            col = i % 4
+            ax[row, col].hist(self.model_fitting.parameter_posterior[:, i])
         plt.tight_layout()
         plt.show()
+        # fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))), figsize=(10, 10))
+        # i = 0
+        # for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+        #     for j in range(np.sum(par.fitted)):
+        #         ax[i].hist(self.model_fitting.parameter_posterior[:, i + j], bins=30, density=True, alpha=0.7)
+        #         ax[i].set_title(f'{par_name}_{j}')
+        #         ax[i].set_xlabel('Value')
+        #         ax[i].set_ylabel('Density')
+        #     i += np.sum(par.fitted)
+        # plt.tight_layout()
 
     def plot_projections(self):
         """Plot simulation projections of weekly notified premises."""
@@ -1475,6 +1491,7 @@ class Plotting:
 
         plt.xlabel('Report Day')
         plt.ylabel('Weekly IPs')
+        plt.show()
 
 @njit
 def cauchy_kernel(distance2, delta, omega):

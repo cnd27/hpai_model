@@ -7,8 +7,9 @@ import sys
 seed = 0
 np.random.seed(seed)
 run_mcmc = False
-use_mcmc = False
-run_projections = False
+use_mcmc = True
+run_projections = True
+plot_projections = True
 data_start = pd.to_datetime('2022-10-01')
 data_end = pd.to_datetime('2023-09-30')
 
@@ -28,41 +29,31 @@ print("Data loaded")
 
 # Set model parameters
 model = hpai_model.ModelStructure(data)
-modelfit = hpai_model.ModelFitting(model)
+modelfit = hpai_model.ModelFitting(model, total_iterations=211000, burn_in=11000, single_iterations=1000)
 
 # Run the model
 if run_mcmc:
     modelfit.run_mcmc_chain(save_iter=np.array([11000, 51000, 210000]))
 
+# Load MCMC chains
 if use_mcmc:
-    modelfit.load_chains(chain_numbers=[0])
-    modelsim = hpai_model.ModelSimulator(modelfit, reps=2)
-else:
-    modelsim = hpai_model.ModelSimulator(model, reps=2)
+    modelfit.load_chains(chain_numbers=[1,2])
 
+# Plot MCMC results
+if run_mcmc or use_mcmc:
+    modelplotting = hpai_model.Plotting(modelfit)
+    modelplotting.plot_parameter_chains()
+    modelplotting.plot_parameter_posteriors()
+
+# Get model projections
+modelsim = hpai_model.ModelSimulator(model, reps=10)
 if run_projections:
     modelsim.run_model()
-    modelsim.save_projections()
 else:
     modelsim.load_projections()
 
-modelplotting = hpai_model.Plotting(modelfit, modelsim)
-modelplotting.plot_projections()
-plt.show()
+# Plot model projections
+if plot_projections:
+    modelplotting_sim = hpai_model.Plotting(model_simulator=modelsim)
+    modelplotting_sim.plot_projections()
 
-# fig, ax = plt.subplots(4, 4, figsize=(16, 16))
-# for i in range(16):
-#     row = i // 4
-#     col = i % 4
-#     ax[row, col].hist(modelfit.parameter_posterior[:, i])
-# plt.tight_layout()
-# fig, ax = plt.subplots(4, 4, figsize=(16, 16))
-# for i in range(16):
-#     row = i // 4
-#     col = i % 4
-#     ax[row, col].plot(modelfit.parameter_chains[0, i, :])
-# plt.tight_layout()
-# plt.show()
-
-
-print(1)
