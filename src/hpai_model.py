@@ -904,6 +904,8 @@ class ModelFitting:
                     ss_new_mu = np.outer(new_mu, new_mu)
                     par.mu[par.fitted] = copy.deepcopy(new_mu)
                     par.sigma[np.ix_(par.fitted, par.fitted)] = ((iter_2 - 1 + self.cov_rate) * par.sigma[np.ix_(par.fitted, par.fitted)] + iter_2 * ss_mu - (iter_2 + 1) * ss_new_mu + ss_pars) / (iter_2 + self.cov_rate)
+
+                    #Ensure covariance matrix is positive definite
                     par.sigma[np.ix_(par.fitted, par.fitted)]  = self.symmetric_pos_def(par.sigma[np.ix_(par.fitted, par.fitted)])
 
             # Update occult infection premises
@@ -913,7 +915,7 @@ class ModelFitting:
             event_types = np.bincount(event_type, minlength=3)
             update_notification += event_types
 
-            # Propose new transition times if required
+            # Pre-generate new transition times if required (change time or add occult)
             new_trans_times = np.zeros(n_premises_updates)
             new_trans_times[event_type == 0] = np.random.gamma(self.model_structure.trans_priors_values[0], self.model_structure.trans_priors_values[1], event_types[0])
             if (self.model_structure.trans_priors_values[0] == 4) & (self.model_structure.trans_priors_values[1] == 2):
@@ -1055,7 +1057,10 @@ class ModelFitting:
 
     def update_chain(self, current_neg_log_post):
         """Update the MCMC chain with the current parameter values and likelihoods."""
+        # Get first empty iteration in the chain
         iter = np.sum(self.neg_log_posterior_chain != 0)
+
+        # Add latest values to the chain
         self.neg_log_posterior_chain[iter] = current_neg_log_post
         i = 0
         for par_name, par in self.model_structure.parameters.fitted_parameters().items():
@@ -1066,10 +1071,14 @@ class ModelFitting:
 
     def get_neg_log_likelihood(self, smart_update=False):
         """Calculate the negative log likelihood of the model."""
+
+        # Get convenient array of current parameters
         current_parameters = np.concatenate([
             par.values.flatten()
             for par_name, par in self.model_structure.parameters.fitted_parameters().items()
         ])
+
+        # Placeholder code to update likelihood using cached values if parameter values are not changed
         if smart_update and ((self._cached_parameters is not None) and (np.array_equal(current_parameters, self._cached_parameters))):
             if (np.array_equal(self.non_fixed_transitions, self._cached_non_fixed_transitions)) and (np.array_equal(self.infected_premises, self._cached_infected_premises)):
                 return self._cached_neg_log_likelihood
@@ -1099,16 +1108,18 @@ class ModelFitting:
                         self._cached_first_exposure = first_exposure
 
         else:
-            # Full update
+            # Full standard update
+            # Check for invalid parameter values
             for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                 if np.any(par.values < 0):
                     return np.inf
+
+            # Pre-calculate components used in likelihood calculation
             transmissibility = np.sum(self.model_structure.parameters.xi.values[:, np.newaxis] * (self.model_structure.data.pop_over_mean[:, self.infected_premises] ** self.model_structure.parameters.psi.values[:, np.newaxis]), axis=0)
             susceptibility = np.sum(self.model_structure.parameters.zeta.values[:, np.newaxis] * (self.model_structure.data.pop_over_mean ** self.model_structure.parameters.phi.values[:, np.newaxis]), axis=0)
             first_exposure = np.min(self.exposure_day)
             season_times = self.model_structure.get_season_times(np.arange(first_exposure, self.model_structure.data.end_day + 1))
             all_season_times = np.sum(season_times) * (self.model_structure.n_premises - len(self.infected_premises))
-
             src = self.model_structure.data.location[:, self.infected_premises]  # (2, k)
             dst = self.model_structure.data.location  # (2, n)
             src_sq = np.sum(src ** 2, axis=0)[:, None]  # (k, 1)
@@ -1116,23 +1127,30 @@ class ModelFitting:
             cross = src.T @ dst  # (k, n)
             distances2 = np.maximum(0, src_sq + dst_sq - 2 * cross)
             kernel_values = self.model_structure.kernel_function(distances2)
+
+            # Split likelihood calculation into three components (exposure, non-exposure, notification time)
             log_like_1 = 0
             log_like_2 = 0
             log_like_3 = 0
 
+            # Format variables for vectorised calculation of beta
             t0 = self.model_structure.transitions[0]
             t2 = self.model_structure.transitions[2]
             exposure_days_i = self.exposure_day[:, np.newaxis]
             exposure_days_j = self.exposure_day[np.newaxis, :]
             report_days_j = self.report_day[np.newaxis, :]
-            mask_I = (exposure_days_j + t0 <= exposure_days_i) & (exposure_days_i < report_days_j)
-            mask_N = (report_days_j <= exposure_days_i) & (exposure_days_i < report_days_j + t2)
-            mask_R = (report_days_j + t2 <= exposure_days_i)
-            kernel_ij = kernel_values[:, self.infected_premises]  # (k, k) matrix: i <- j interaction
+            kernel_ij = kernel_values[:, self.infected_premises]
             np.fill_diagonal(kernel_ij, 0)
             trans_j = transmissibility[np.newaxis, :]  # (1, k)
             susc_i = susceptibility[self.infected_premises][:, np.newaxis]  # (k, 1)
             beta_ij = trans_j * susc_i * kernel_ij
+
+            # Calculate which premises are in which infection classes at each exposure time
+            mask_I = (exposure_days_j + t0 <= exposure_days_i) & (exposure_days_i < report_days_j)
+            mask_N = (report_days_j <= exposure_days_i) & (exposure_days_i < report_days_j + t2)
+            mask_R = (report_days_j + t2 <= exposure_days_i)
+
+            # Get force of infection on infection premises when exposed
             gamma_0 = self.model_structure.parameters.gamma.values[0]  # gamma_0
             gamma_1 = self.model_structure.parameters.gamma.values[0] * self.model_structure.parameters.gamma.values[1]  # gamma_1
             F_I = gamma_0 * beta_ij * mask_I  # (k, k)
@@ -1146,6 +1164,8 @@ class ModelFitting:
             season_times_i = self.model_structure.get_season_times(self.exposure_day)  # (k,) vector
             exposure_rate = self.model_structure.parameters.epsilon.values[0] * season_times_i + force_of_infection
             log_like_1 = np.sum(np.log(exposure_rate))
+
+            # Get force of infection on all premises that do not become exposed
             for i in range(len(self.infected_premises)):
                 beta_values = transmissibility[i] * susceptibility * kernel_values[i]
                 # Get the number of days each premises is susceptible when the i-th premises is infectious
@@ -1163,11 +1183,15 @@ class ModelFitting:
                     log_like_2 += -gamma_1 * np.sum(decay_R)
                 log_like_2 += -gamma_0 * np.sum(beta_values * days_I)
                 log_like_2 += -gamma_1 * np.sum(beta_values * days_N)
+            log_like_2 += -self.model_structure.parameters.epsilon.values[0] * all_season_times
+
+            # Get likelihood of notification times
             notif_like = stats.gamma.pdf(self.non_fixed_transitions[:self.n_cases], a=self.model_structure.trans_priors_values[0], scale=self.model_structure.trans_priors_values[1])
             log_like_3 += np.sum(np.log(notif_like))
             if self.n_cases < len(self.infected_premises):
                 log_like_3 += np.sum(np.log(1 - stats.gamma.cdf(self.non_fixed_transitions[self.n_cases:], a=self.model_structure.trans_priors_values[0], scale=self.model_structure.trans_priors_values[1])))
-            log_like_2 += -self.model_structure.parameters.epsilon.values[0] * all_season_times
+
+            # Sum likelihood components and cache results
             neg_log_like = -(log_like_1 + log_like_2 + log_like_3)
             self._cached_parameters = current_parameters
             self._cached_neg_log_likelihoods = neg_log_like
@@ -1212,6 +1236,7 @@ class ModelFitting:
 
     def get_exp(self, values, type):
         """Get the exponentiated values based on prior type."""
+        # Reverse log transform for gamma and logit transform for beta
         exp_values = np.exp(values)
         exp_values[type == 'beta'] = exp_values[type == 'beta'] / (1 + exp_values[type == 'beta'])
         return exp_values
@@ -1220,9 +1245,12 @@ class ModelSimulator:
     """Placeholder for the infection model simulation class."""
     def __init__(self, model_structure=None, model_fitting=None, reps=10000, initial_condition_type=0, sellke=False,
                  vaccine=None, biosecurity=None):
+
+        # Use model_structure (for given parameter values) or model_fitting (for sampling from posterior) to set up simulation
         if model_structure is None and model_fitting is None:
             raise ValueError('model_structure or model_fitting are required')
         if model_structure is not None:
+            # Import model structure parameters
             self.model_structure = model_structure
             self.model_structure.get_chain_string(0, simulation=True)
             self.parameter_posterior = np.zeros(sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values()))
@@ -1246,6 +1274,7 @@ class ModelSimulator:
             self.n_premises = self.model_structure.n_premises
             self.end_day = self.model_structure.data.end_day
         if model_fitting is not None:
+            # Import model fitting posterior samples
             self.model_fitting = model_fitting
             self.model_structure = model_fitting.model_structure
             self.parameter_posterior = model_fitting.parameter_posterior
@@ -1262,6 +1291,7 @@ class ModelSimulator:
         self.exposure_day = [None for _ in range(reps)]
         self.report_day = [None for _ in range(reps)]
         self.infected_premises = [None for _ in range(reps)]
+        # Get the indices of the posterior samples to use for each replicate (and Sellke resistances)
         if self.sellke:
             self.resistances = np.tile(np.random.exponential(1, (100, self.model_structure.n_premises)), np.ceil(self.reps/100))[:self.reps, :]
             if np.ceil(self.reps / 100) > self.parameter_posterior.shape[0]:
@@ -1272,18 +1302,28 @@ class ModelSimulator:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
 
     def run_model(self, save_results=True):
+        """Run the infection model simulation."""
+        # Run realisation for each replicate
         for rep in range(self.reps):
             print(f"Simulation {rep + 1} of {self.reps}")
             if self.sellke:
                 self.cumulative_hazard = np.zeros(self.model_structure.n_premises)
+
+            # Initialise status of premises and time in current status
             self.premises_status = np.zeros((self.end_day + 1, self.model_structure.n_premises), dtype=int)
             self.premises_status_days = np.zeros(self.n_premises, dtype=int)
+
+            # Set notification time by fitting gamma distribution to posterior samples
             if (self.sellke and rep % 100 == 0) or not self.sellke:
                 fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep], :self.n_cases], floc=0)
                 self.non_fixed_transitions = np.random.gamma(fit_a, fit_b, self.n_premises)
                 self.non_fixed_transitions[self.premises_posterior[self.post_idx[rep], :self.n_cases].astype(int)] = (
                     self.transition_posterior)[self.post_idx[rep], :self.n_cases]
+
+            # Initial conditions
             self.get_initial_conditions(rep)
+
+            # Pre-calculate transmissibility, susceptibility and grid attributes
             self.transmissibility = np.sum(self.model_structure.parameters.xi.values[:, np.newaxis] * (
                         self.model_structure.data.pop_over_mean ** self.model_structure.parameters.psi.values[:, np.newaxis]), axis=0)
             self.susceptibility = np.sum(self.model_structure.parameters.zeta.values[:, np.newaxis] * (
@@ -1301,9 +1341,15 @@ class ModelSimulator:
             kernel_grid = self.model_structure.kernel_function(self.model_structure.data.grid_dist2)
             self.u_ab = 1 - np.exp(-self.max_susceptibility_grid * self.max_transmission_grid[:, np.newaxis] * kernel_grid)
             self.max_rate_grid = self.max_susceptibility_grid * kernel_grid
+
+            # Run simulation over all days
             for day in range(self.end_day):
                 self.update_day(day, rep)
+
+            # Store results from each replicate
             self.report_day[rep] = self.exposure_day[rep] + np.round(self.non_fixed_transitions[self.infected_premises[rep]]).astype(int) + self.model_structure.transitions[0]
+
+        # Compile results from all replicates
         self.report_day_projections = np.concatenate(self.report_day)
         self.report_premises_projections = np.concatenate(self.infected_premises)
         self.report_rep_projections = np.array([])
@@ -1315,7 +1361,11 @@ class ModelSimulator:
             self.save_projections()
 
     def update_day(self, day, rep):
+        """Update the model state for a single day."""
+
+        # Get seasonal adjustment
         season_time = self.model_structure.get_season_times(day)
+        # Determine susceptibility and transmissibility adjustment to interventions
         if self.vaccine is not None:
             raise NotImplementedError("Vaccination not yet implemented in ModelSimulator.")
         elif self.biosecurity is not None:
@@ -1323,11 +1373,15 @@ class ModelSimulator:
         else:
             new_transmissibility = self.transmissibility
             new_susceptibility = self.susceptibility
+
+        # Compute exposure events from background transmission
         if self.sellke:
             self.cumulative_hazard += self.model_structure.parameters.epsilon.values[0] * season_time * (new_susceptibility / self.susceptibility)
             expose_event = self.cumulative_hazard > self.resistances[rep]
         else:
             expose_event = 1 - np.exp(-self.model_structure.parameters.epsilon.values[0] * season_time * (new_susceptibility / self.susceptibility)) > np.random.uniform(size=self.n_premises)
+
+        # Execute other compartment transitions
         other_events = np.zeros(self.n_premises, dtype=int)
         infected_premises_now = np.where((0 < self.premises_status[day, :]) & (self.premises_status[day, :] < 4))[0]
         infection_status = self.premises_status[day, infected_premises_now]
@@ -1335,6 +1389,8 @@ class ModelSimulator:
         move_compartment[infection_status == 1] = self.premises_status_days[infected_premises_now[infection_status == 1]] >= self.model_structure.transitions[0] - 1
         move_compartment[infection_status == 2] = self.premises_status_days[infected_premises_now[infection_status == 2]] >= np.round(self.non_fixed_transitions[infected_premises_now[infection_status == 2]]).astype(int) - 1
         move_compartment[infection_status == 3] = self.premises_status_days[infected_premises_now[infection_status == 3]] >= self.model_structure.transitions[2] - 1
+
+        # If time to notification is zero, can move through two compartments in one day
         multiple_move = ((self.premises_status[day, infected_premises_now] == 2) & (np.round(self.non_fixed_transitions[infected_premises_now]).astype(int) == 0))
         other_events[infected_premises_now[move_compartment]] = 1
         other_events[infected_premises_now[move_compartment & multiple_move]] = 2
@@ -1344,34 +1400,50 @@ class ModelSimulator:
             np.where(np.exp(-(1 / self.model_structure.parameters.rho.values[0]) * np.arange(500)) > 1e-20)[0][-1]
             infectious_premises = np.append(infectious_premises, np.where(
                 (self.premises_status[day, :] == 4) & (self.premises_status_days <= max_decay_days))[0])
+
+        # Compute exposure events from infectious premises
         if self.sellke:
             for a in infectious_premises:
                 susceptibility_mask = self.premises_status[day, :] == 0
+
+                # Get distance between given infectious premises and all susceptible premises
                 diffs = self.model_structure.data.location[:, susceptibility_mask] - self.model_structure.data.location[:, a][:, np.newaxis]
                 distances2 = np.einsum('ij,ij->j', diffs, diffs)
                 if self.biosecurity or self.vaccine is not None:
                     sim_susceptibility = new_susceptibility[susceptibility_mask]
                 else:
                     sim_susceptibility = self.susceptibility[susceptibility_mask]
+
+                # Add exposure rate to cumulative hazard
                 lambda_ij = (sim_susceptibility * self.gamma[self.premises_status[day, a] - 2] *
                              new_transmissibility[a] * season_time * self.model_structure.kernel_function(distances2))
                 self.cumulative_hazard[susceptibility_mask] += lambda_ij
             expose_event = self.cumulative_hazard > self.resistances[rep]
         else:
+            # Conditional subsample algorithm (see Sellman et al. 2018)
             infectious_grids, inf_in_grid = np.unique(self.model_structure.data.premises_grid[infectious_premises], return_counts=True)
             sus_in_grid = np.bincount(self.model_structure.data.premises_grid[self.premises_status[day, :] == 0], minlength=self.model_structure.data.n_grids)
             sus_grids = np.where(sus_in_grid > 0)[0]
+
+            # Loop over infectious grids
             for a_i, a in enumerate(infectious_grids):
                 N_a = infectious_premises[self.model_structure.data.premises_grid[infectious_premises] == a]
                 n_a = len(N_a)
                 w_ab = 1 - (1 - self.u_ab[a, :]) ** n_a
+
+                # Loop over susceptible grids
                 for b in sus_grids[sus_grids != a]:
                     n_b = sus_in_grid[b]
                     n_sample = np.random.binomial(n_b, w_ab[b])
+
+                    # If no samples, skip to next grid
                     if n_sample > 0:
+                        # Consider susceptible premises in grid b
                         N_b = np.where((self.model_structure.data.premises_grid == b) & (self.premises_status[day, :] == 0))[0]
                         N_sample = np.random.choice(N_b, n_sample, replace=False)
                         K_ij = self.model_structure.kernel_function(np.sum((self.model_structure.data.location[:, N_a, np.newaxis] - self.model_structure.data.location[:, np.newaxis, N_sample]) ** 2, axis=0))
+
+                        # Get probability of exposure from all infectious premises in grid a to sampled susceptible premises in grid b
                         p_ij = np.zeros((n_a, n_sample))
                         if self.biosecurity or self.vaccine is not None:
                             sim_susceptibility = new_susceptibility[N_sample]
@@ -1388,13 +1460,21 @@ class ModelSimulator:
                                 -sim_susceptibility * self.gamma[self.premises_status[day, N_a[self.premises_status[day, N_a] == 4]] - 2, np.newaxis] *
                                 new_transmissibility[N_a[self.premises_status[day, N_a] == 4], np.newaxis] * days_since * season_time * K_ij[
                                     self.premises_status[day, N_a] == 4])
+
+                        # Get overall probability of exposure from all infectious premises in grid a to sampled susceptible premises in grid b
                         p_aj = 1 - np.prod(1 - p_ij, axis=0)
+
+                        # Determine which sampled susceptible premises become exposed
                         exp_mask = N_sample[np.random.rand(n_sample) < p_aj / w_ab[b]]
                         expose_event[exp_mask] = True
+
+                # Now consider susceptible premises in the same grid as the infectious premises
                 N_b = np.where((self.model_structure.data.premises_grid == a) & (self.premises_status[day, :] == 0))[0]
                 n_b = sus_in_grid[a]
                 K_ij = self.model_structure.kernel_function(np.sum((self.model_structure.data.location[:, N_a, np.newaxis] -
                                                                     self.model_structure.data.location[:, np.newaxis, N_b]) ** 2, axis=0))
+
+                # Get probability of exposure from all infectious premises in grid a to susceptible premises in grid a
                 p_ij = np.zeros((n_a, n_b))
                 if self.biosecurity or self.vaccine is not None:
                     sim_susceptibility = new_susceptibility[N_b]
@@ -1411,8 +1491,12 @@ class ModelSimulator:
                         new_transmissibility[N_a[self.premises_status[day, N_a] == 4], np.newaxis] * days_since * season_time *
                         K_ij[self.premises_status[day, N_a] == 4])
                 p_aj = 1 - np.prod(1 - p_ij, axis=0)
+
+                # Determine which susceptible premises become exposed
                 exp_mask = N_b[np.random.rand(n_b) < p_aj]
                 expose_event[exp_mask] = True
+
+        # Update premises status and days in current status
         self.premises_status_days[np.where((self.premises_status[day, :] > 0) & (self.premises_status[day, :] <= 4))[0]] += 1
         self.premises_status[day + 1, :] = self.premises_status[day, :]
         self.premises_status[day + 1, (self.premises_status[day, :] == 0) & expose_event] = 1
@@ -1420,11 +1504,16 @@ class ModelSimulator:
         self.premises_status[day + 1, other_events == 2] += 2
         self.premises_status_days[other_events > 0] = 0
         self.premises_status_days[(self.premises_status[day, :] == 0) & expose_event] = 1
+
+        # Store newly infected premises and their exposure day
         self.infected_premises[rep] = np.append(self.infected_premises[rep], np.where((self.premises_status[day, :] == 0) & expose_event)[0])
         self.exposure_day[rep] = np.append(self.exposure_day[rep], np.full(np.sum((self.premises_status[day, :] == 0) & expose_event), day))
 
     def get_initial_conditions(self, rep):
+        '''Set the initial conditions for the simulation.'''
         if self.initial_condition_type == 0:
+
+            # Use data on report days to set initial infected premises and their exposure days on day 0
             data_exposed = self.model_structure.data.report_day - (sum(x for x in self.model_structure.transitions[:(self.model_structure.data_compartments_idx[0] - 1)] if x is not None) + np.round(self.non_fixed_transitions[self.model_structure.data.infected_premises]).astype(int))
             initial_premises_idx = np.where((data_exposed <= 0) & (self.model_structure.data.report_day > -self.model_structure.transitions[2]))[0]
             initial_premises = self.model_structure.data.infected_premises[initial_premises_idx]
@@ -1437,6 +1526,8 @@ class ModelSimulator:
             initial_time[initial_type == 0] = -data_exposed[initial_premises_idx][initial_type == 0]
             initial_time[initial_type == 1] = -data_exposed[initial_premises_idx][initial_type == 1] - self.model_structure.transitions[0]
             initial_time[initial_type == 2] = -self.model_structure.data.report_day[initial_premises_idx][initial_type == 2]
+
+            # Set initial premises status and days in current status
             self.premises_status_days[initial_premises] = initial_time
             self.premises_status[0, initial_premises] = initial_type + 1
         else:
@@ -1468,6 +1559,7 @@ class ModelSimulator:
 
 class Plotting:
     def __init__(self, model_fitting=None, model_simulator=None):
+        '''Initialize plotting class with model fitting and/or simulation results.'''
         if model_fitting is not None:
             self.model_fitting = model_fitting
             self.model_structure = model_fitting.model_structure
