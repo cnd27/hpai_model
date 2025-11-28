@@ -439,6 +439,7 @@ class Parameter:
         self.sigma = np.array(sigma, dtype=float)
         self.mu = copy.deepcopy(self.log_values)
 
+        # Validate prior types and shapes
         allowed_priors = {"gamma", "beta"}
         invalid = [p for p in self.prior_type if p not in allowed_priors]
         if invalid:
@@ -451,20 +452,16 @@ class Parameter:
         if np.atleast_2d(self.prior_pars).shape != (np.atleast_2d(self.values).shape[1], 2):
             raise ValueError(f"Parameter {name}: prior_pars shape mismatch.")
 
-    def update_values(self, new_values, idx):
-        self.values[idx] = new_values
-
-    def copy(self):
-        return copy.deepcopy(self)
-
     @property
     def log_values(self):
+        """Return the log-transformed parameter values."""
         log_values = np.log(self.values)
         log_values[self.prior_type == 'beta'] = np.log(self.values[self.prior_type == 'beta'] / (1 - self.values[self.prior_type == 'beta']))
         return log_values
 
 class ParameterSet:
     def __init__(self):
+        """Container for model parameters."""
         self.epsilon = None
         self.gamma = None
         self.delta = None
@@ -484,11 +481,8 @@ class ParameterSet:
         """Return only parameters that are fitted."""
         return {k: v for k, v in self.all_parameters().items() if np.any(v.fitted)}
 
-    def copy(self):
-        return copy.deepcopy(self)
-
 class ModelStructure:
-    """Placeholder for the infection model class."""
+    """Class for holding the model structure and parameters."""
     def __init__(self, data, n_compartments=5, inf_compartments=None, data_compartments=None,
                  fixed_transitions=None, kernel_type='cauchy', par_values=None, par_values_init=None, par_fitted=None,
                  par_prior_type=None, par_prior_values=None, par_descriptions=None, par_sigma=None, transitions=None,
@@ -571,17 +565,15 @@ class ModelStructure:
         if self.kernel_type == 'cauchy':
             omega = self.parameters.omega.values
             return cauchy_kernel(distance2, delta, omega)
-            # base = delta * delta + distance2  # (n,)
-            # return delta * (base ** -self.parameters.omega.values)
         elif self.kernel_type == 'exp':
             return exp_kernel(distance2, delta)
-            # return np.exp(-np.sqrt(distance2) * self.parameters.delta.values)
         else:
             raise ValueError("kernel_type must be 'cauchy' or 'exp'.")
 
     def set_up_parameters(self, par_values, par_values_init, par_fitted, par_prior_type,
                             par_prior_values, par_descriptions, par_sigma):
-
+        """Set up model parameters with provided or default values."""
+        # List of default parameter values
         if par_values is None:
             par_values = [np.array([1e-5]), np.array([0.05] + [0.9] * (np.count_nonzero(self.inf_compartments) - 1)),
                               np.array([2.0]), np.array([1.33]), np.array([0.5] * self.n_species),
@@ -589,10 +581,12 @@ class ModelStructure:
                               np.array([1] + [0.5] * (self.n_species - 1)), np.array([1.5, 0.5])]
         else:
             self.parameter_check(par_values, 'par_values')
+        # Initial values are the same as par_values if not provided
         if par_values_init is None:
             par_values_init = copy.deepcopy(par_values)
         else:
             self.parameter_check(par_values_init, 'par_values_init')
+        # Set which parameters are fitted
         if par_fitted is None:
             par_fitted = [np.array([True]), np.array([True] * np.count_nonzero(self.inf_compartments)),
                           np.array([True]), np.array([False]), np.array([True] * self.n_species),
@@ -600,12 +594,14 @@ class ModelStructure:
                           np.array([False] + [True] * (self.n_species - 1)), np.array([True, True])]
         else:
             self.parameter_check(par_fitted, 'par_fitted')
+        # Set prior types (gamma or beta)
         if par_prior_type is None:
             par_prior_type = [['gamma'], ['gamma'] * np.count_nonzero(self.inf_compartments),
                                ['gamma'], ['gamma'], ['beta'] * self.n_species, ['beta'] * self.n_species,
                                ['gamma'] * self.n_species, ['gamma'] * self.n_species, ['gamma', 'beta']]
         else:
             self.parameter_check(par_fitted, 'par_fitted')
+        # Set prior parameter values
         if par_prior_values is None:
             par_prior_values = [np.array([[1, 1e-5]]),
                                  np.array([[1, 0.01]] + [[1, 0.8]] * (np.count_nonzero(self.inf_compartments) - 1)),
@@ -618,6 +614,7 @@ class ModelStructure:
                                  np.array([[2.0, 2.0], [2.0, 2.0]])]
         else:
             self.parameter_check(par_prior_values, 'par_prior_values')
+        # Set descriptions for parameters
         if par_descriptions is None:
             par_descriptions = [['Baseline infectious\npressure'],
                                 ['Infectious pressure\nfrom infected premises',
@@ -637,6 +634,7 @@ class ModelStructure:
                                 ['Shape of seasonality', 'Timing of seasonality']]
         else:
             self.parameter_check(par_descriptions, 'par_descriptions')
+        # Set sigma for proposal distributions
         if par_sigma is None:
             par_sigma = [np.array([0.2]), np.array([0.5] + [0.1] * (np.count_nonzero(self.inf_compartments) - 1)),
                               np.array([0.2]), np.array([0.05]), np.array([3.0] * self.n_species),
@@ -661,6 +659,7 @@ class ModelStructure:
         return parameters
 
     def parameter_check(self, input_list, name):
+        """Check validity of parameter input lists."""
         par_lengths = np.array([1, np.count_nonzero(self.inf_compartments), 1, 1, self.n_species, self.n_species,
                             self.n_species, self.n_species, 2])
         if len(input_list) != 9:
@@ -700,6 +699,7 @@ class ModelStructure:
                     raise ValueError(f"{name}[{i}] has incorrect shape.")
 
     def get_chain_string(self, iter, simulation=False):
+        """Generate a string identifier for the model configuration for saving outputs."""
         self.chain_string = (self.data.date_start.strftime('%Y%m%d') + '_' +
                              self.data.date_end.strftime('%Y%m%d') + '_' + self.kernel_type)
         if not simulation:
@@ -723,6 +723,7 @@ class ModelStructure:
         #             self.chain_string += 'silent' + str(self.vaccine['silent']) + '_'
 
     def get_season_times(self, t):
+        """Calculate seasonal scaling factor at time t."""
         return np.exp(-self.parameters.nu.values[0] * (1 + np.cos(2 * np.pi * ((t + self.data.date_start.timetuple().tm_yday) / 365 - self.parameters.nu.values[1]))))
 
 class ModelFitting:
@@ -749,15 +750,16 @@ class ModelFitting:
         self.n_cases = len(self.infected_premises)
         self.end_day = model_structure.data.end_day
 
+        # MCMC tuning parameters
         self.cov_rate = 10
         self.lambda_rate = 50
         self.lambda_iter = 1
 
+        # Storage for MCMC chains
         self.neg_log_posterior_chain = np.zeros(self.total_iterations + 1)
         self.parameter_chain = np.zeros((sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values()), self.total_iterations + 1))
         self.premises_chain = [None for _ in range(self.total_iterations + 1)]
         self.transition_chain = [None for _ in range(self.total_iterations + 1)]
-
         self.neg_log_posterior_chains = None
         self.parameter_chains = None
         self.premises_chains = None
@@ -773,18 +775,22 @@ class ModelFitting:
         self._cached_first_exposure = None
         self._cached_neg_log_likelihood = None
 
+        # Initial chain string
         self.model_structure.get_chain_string(self.total_iterations)
 
     @property
     def exposure_day(self):
+        """Calculate exposure day for infected premises based on report day and transitions."""
         return self.report_day - (sum(x for x in self.model_structure.transitions[:(self.model_structure.data_compartments_idx[0] - 1)] if x is not None) + np.round(self.non_fixed_transitions).astype(int))
 
     def run_mcmc_chain(self, save_iter=None):
-        # Run MCMC
+        """Run the MCMC fitting procedure."""
+        # Set up saving MCMC after given number of iterations
         if save_iter is None:
             save_iter = np.array([self.total_iterations])
         self.n_to_fit = sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values())
         init_pars = copy.deepcopy(self.model_structure.parameters)
+        # Get initial random non-fixed transitions
         if self.model_structure.trans_priors_type == 'gamma':
             self.non_fixed_transitions = np.random.gamma(self.model_structure.trans_priors_values[0],
                                                        self.model_structure.trans_priors_values[1],
@@ -794,26 +800,32 @@ class ModelFitting:
                                                       self.model_structure.trans_priors_values[1],
                                                       len(self.infected_premises))
 
+        # Initialise acceptance rates
         accept = 0
         accept_notification = np.zeros(3)
         update_notification = np.zeros(3)
         current_neg_log_post = self.get_neg_log_likelihood()
+        # Save initial state to the first entry in the chain
         self.update_chain(current_neg_log_post)
+
+        # Begin MCMC iterations
         for iter in range(self.total_iterations):
             print(f"MCMC iteration {iter + 1} of {self.total_iterations}")
+            # Check if we need to save this iteration and get string
             if np.isin(iter + 1, save_iter):
                 save = True
             else:
                 save = False
             self.model_structure.get_chain_string(iter + 1)
 
-            # Do single parameter updates
+            # Do initial single parameter updates
             if iter < self.single_iterations:
                 for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                     par_values = par.values[par.fitted]
                     par_log_values = par.log_values[par.fitted]
                     par_sigma = par.sigma[par.fitted]
                     for i in range(len(par_values)):
+
                         # Propose new value
                         old_value = par_values[i]
                         old_log_value = par_log_values[i]
@@ -824,26 +836,30 @@ class ModelFitting:
                             neg_log_jacobian = -new_log_value + old_log_value
                         elif np.array(par.prior_type)[par.fitted][i] == 'beta':
                             neg_log_jacobian = -new_log_value + old_log_value - np.log(1 - new_value) + np.log(1 - old_value)
+
+                        # Calculate new posterior
                         new_neg_log_likelihood = self.get_neg_log_likelihood()
                         new_neg_log_post = new_neg_log_likelihood + self.get_neg_log_prior()
 
+                        # Accept or reject new value
                         if current_neg_log_post - new_neg_log_post - neg_log_jacobian > np.log(np.random.uniform()):
                             current_neg_log_post = new_neg_log_post
                             par.sigma[np.where(par.fitted)[0][i]] *= 1.4
                             accept += 1 / self.n_to_fit
                             # print(f"Iteration {iter + 1}: Accepted {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
                         else:
-                        #     print(f"Iteration {iter + 1}: Rejected {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
+                            # print(f"Iteration {iter + 1}: Rejected {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
                             par.sigma[np.where(par.fitted)[0][i]] *= (1.4 ** -0.7857143)
                             par.values[np.where(par.fitted)[0][i]] = old_value
             else:
+                # Continue with multivariate parameter update
                 if iter == self.single_iterations:
                     for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                         par.sigma = np.diag(getattr(init_pars,par_name).sigma)
                 neg_log_jacobian = 0
-                # print(np.concatenate([par.values.flatten() for par_name, par in
-                #                       self.model_structure.parameters.fitted_parameters().items()]))
                 current_pars = copy.deepcopy(self.model_structure.parameters)
+
+                # Propose new values by parameter block
                 for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                     sd = np.sqrt(np.diag(par.sigma[np.ix_(par.fitted, par.fitted)]))
                     denominator = np.outer(sd, sd)
@@ -860,10 +876,13 @@ class ModelFitting:
                             neg_log_jacobian += -new_log_value[i] + old_log_value[i]
                         elif np.array(par.prior_type)[par.fitted][i] == 'beta':
                             neg_log_jacobian += -new_log_value[i] + old_log_value[i] - np.log(1 - new_value[i]) + np.log(1 - old_value[i])
+
+                # Calculate new posterior after all parameters changed
                 new_neg_log_likelihood = self.get_neg_log_likelihood()
                 new_neg_log_post = new_neg_log_likelihood + self.get_neg_log_prior()
                 iter_2 = iter - self.single_iterations + 1
-                # print(np.concatenate([par.values.flatten() for par_name, par in self.model_structure.parameters.fitted_parameters().items()]))
+
+                # Accept or reject new parameter set
                 if current_neg_log_post - new_neg_log_post - neg_log_jacobian > np.log(np.random.uniform()):
                     current_neg_log_post = new_neg_log_post
                     # print(f"Iteration {iter + 1}: Accepted, LL: {current_neg_log_post:.2f}")
@@ -876,6 +895,8 @@ class ModelFitting:
                         par.values[par.fitted] = getattr(current_pars, par_name).values[par.fitted]
                     if iter % 2 == 1:
                         self.lambda_iter *= ((1 + self.lambda_rate / (self.lambda_rate + iter_2)) ** -0.305483)
+
+                # Update mean and covariance matrix
                 for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                     new_mu = (iter_2 / (iter_2 + 1)) * par.mu[par.fitted]  + par.log_values[par.fitted] / (iter_2 + 1)
                     ss_pars = np.outer(par.log_values[par.fitted], par.log_values[par.fitted])
@@ -884,13 +905,16 @@ class ModelFitting:
                     par.mu[par.fitted] = copy.deepcopy(new_mu)
                     par.sigma[np.ix_(par.fitted, par.fitted)] = ((iter_2 - 1 + self.cov_rate) * par.sigma[np.ix_(par.fitted, par.fitted)] + iter_2 * ss_mu - (iter_2 + 1) * ss_new_mu + ss_pars) / (iter_2 + self.cov_rate)
                     par.sigma[np.ix_(par.fitted, par.fitted)]  = self.symmetric_pos_def(par.sigma[np.ix_(par.fitted, par.fitted)])
+
             # Update occult infection premises
             n_premises_updates = np.floor(self.occult_updates * len(self.infected_premises)).astype(int)
             # Three events types (change infection time, add occult infection, remove occult infection)
             event_type = np.random.randint(0, 3, n_premises_updates)
             event_types = np.bincount(event_type, minlength=3)
             update_notification += event_types
-            new_trans_times = np.zeros( n_premises_updates)
+
+            # Propose new transition times if required
+            new_trans_times = np.zeros(n_premises_updates)
             new_trans_times[event_type == 0] = np.random.gamma(self.model_structure.trans_priors_values[0], self.model_structure.trans_priors_values[1], event_types[0])
             if (self.model_structure.trans_priors_values[0] == 4) & (self.model_structure.trans_priors_values[1] == 2):
                 new_trans_times[event_type == 1] = stats.truncnorm.rvs(-0.6567 / 8.17, np.inf, loc=0.6567, scale=8.17, size=np.sum(event_type == 1))
@@ -898,8 +922,12 @@ class ModelFitting:
                 raise ValueError("New occult infection times currently only supported for Gamma(4,2) distribution.")
             for i, event in enumerate(event_type):
                 if event == 0:
+
+                    # Change time to notification
                     update_idx = np.random.randint(0, self.n_cases)
                     old_transition = self.non_fixed_transitions[update_idx]
+
+                    # Update transition time depending on if occult or not
                     if update_idx > self.n_cases:
                         new_trans_times[i] = stats.truncnorm.rvs(-0.6567 / 8.17, np.inf, loc=0.6567, scale=8.17)
                         proposal = (stats.gamma.cdf(old_transition, a=self.model_structure.trans_priors_values[0],
@@ -913,8 +941,11 @@ class ModelFitting:
                                                     scale=self.model_structure.trans_priors_values[0]))
                     self.non_fixed_transitions[update_idx] = new_trans_times[i]
 
+                    # Calculate new posterior
                     new_neg_log_like = self.get_neg_log_likelihood()
                     new_neg_log_post = new_neg_log_like + self.get_neg_log_prior()
+
+                    # Accept or reject new transition time
                     if current_neg_log_post - new_neg_log_post - np.log(proposal) > np.log(np.random.uniform()):
                         current_neg_log_post = new_neg_log_post
                         # print(f"Iteration {iter + 1}.{i}: Accepted change, LL: {current_neg_log_post:.2f}")
@@ -923,17 +954,20 @@ class ModelFitting:
                         # print(f"Iteration {iter + 1}.{i}: Rejected change, LL: {current_neg_log_post:.2f}")
                         self.non_fixed_transitions[update_idx] = old_transition
                 elif event == 1:
-                    # add occult infection
+                    # Add occult infection
                     new_premises = np.random.choice(np.setdiff1d(range(self.model_structure.n_premises),
                                                              self.infected_premises))
                     self.infected_premises = np.append(self.infected_premises, new_premises)
                     self.non_fixed_transitions = np.append(self.non_fixed_transitions, new_trans_times[i])
                     self.report_day = np.append(self.report_day, self.end_day)
 
+                    # Calculate new posterior
                     new_neg_log_like = self.get_neg_log_likelihood()
                     new_neg_log_post = new_neg_log_like + self.get_neg_log_prior()
                     proposal = (self.model_structure.n_premises - len(self.infected_premises) + 1) / (
                             (len(self.infected_premises) - self.n_cases) * stats.truncnorm.pdf(new_trans_times[i].reshape(-1, 1), -0.6567 / 8.17, np.inf, loc=0.6567, scale=8.17))
+
+                    # Accept or reject new occult infection
                     if current_neg_log_post - new_neg_log_post + np.log(proposal) > np.log(np.random.uniform()):
                         current_neg_log_post = new_neg_log_post
                         # print(f"Iteration {iter + 1}.{i}: Accepted addition, LL: {current_neg_log_post:.2f}")
@@ -944,17 +978,21 @@ class ModelFitting:
                         self.non_fixed_transitions = self.non_fixed_transitions[:-1]
                         self.report_day = self.report_day[:-1]
                 elif (event == 2) and (len(self.infected_premises) > self.n_cases):
-                    # remove occult infection
+                    # Remove occult infection
                     remove_idx = np.random.choice(range(self.n_cases, len(self.infected_premises)))
                     remove_premises = self.infected_premises[remove_idx]
                     remove_transitions = copy.deepcopy(self.non_fixed_transitions[remove_idx])
                     self.infected_premises = np.delete(self.infected_premises, remove_idx)
                     self.non_fixed_transitions = np.delete(self.non_fixed_transitions, remove_idx)
                     self.report_day = np.delete(self.report_day, remove_idx)
+
+                    # Calculate new posterior
                     new_neg_log_like = self.get_neg_log_likelihood()
                     new_neg_log_post = new_neg_log_like + self.get_neg_log_prior()
                     proposal = ((len(self.infected_premises) - self.n_cases + 1) * stats.truncnorm.pdf(remove_transitions, -0.6567 / 8.17, np.inf, loc=0.6567, scale=8.17)) \
                                / (self.model_structure.n_premises - len(self.infected_premises))
+
+                    # Accept or reject removal of occult infection
                     if current_neg_log_post - new_neg_log_post + np.log(proposal) > np.log(np.random.uniform()):
                         current_neg_log_post = new_neg_log_post
                         # print(f"Iteration {iter + 1}.{i}: Accepted removal, LL: {current_neg_log_post:.2f}")
@@ -964,6 +1002,8 @@ class ModelFitting:
                         self.infected_premises = np.insert(self.infected_premises, remove_idx, remove_premises)
                         self.non_fixed_transitions = np.insert(self.non_fixed_transitions, remove_idx, remove_transitions)
                         self.report_day = np.insert(self.report_day, remove_idx, self.end_day)
+
+            # Update MCMC chain with current values and save if required
             self.update_chain(current_neg_log_post)
             if save:
                 self.save_chain(iter + 1)
@@ -972,6 +1012,7 @@ class ModelFitting:
         """Save the MCMC chains to files."""
         np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{self.chain_number}.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
         np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_parameters_{self.chain_number}.npy', self.parameter_chain[:, :(length_of_chain + 1)])
+
         #Convert premises_chain and transition_chain to arrays before saving
         max_length = max(len(arr) for arr in self.premises_chain[:(length_of_chain + 1)])
         premises_array = np.full((max_length, length_of_chain + 1), np.inf, dtype=float)
@@ -1003,6 +1044,8 @@ class ModelFitting:
             max_length_i = premises_chains_tmp[i].shape[0]
             self.premises_chains[i, :max_length_i, :] = premises_chains_tmp[i]
             self.transition_chains[i, :max_length_i, :] = transition_chains_tmp[i]
+
+        # Get posterior samples by values_per_chain after burn-in
         choose_samples = np.arange(self.burn_in + 1, self.total_iterations + 1,
                                    (self.total_iterations - self.burn_in - 1) / (values_per_chain - 1)).astype(int)
         self.neg_log_posterior_posterior = self.neg_log_posterior_chains[:, choose_samples].flatten()
@@ -1020,7 +1063,6 @@ class ModelFitting:
             i += np.sum(par.fitted)
         self.premises_chain[iter] = copy.deepcopy(self.infected_premises)
         self.transition_chain[iter] = copy.deepcopy(self.non_fixed_transitions)
-
 
     def get_neg_log_likelihood(self, smart_update=False):
         """Calculate the negative log likelihood of the model."""
@@ -1162,7 +1204,7 @@ class ModelFitting:
                     p_vals = min(e_vals[e_vals > 0])
                 n_vals = e_vals[e_vals < 0]
                 nn_vals = p_vals * (s_vals - n_vals) * (s_vals - n_vals) / t_vals
-                d_vals = np.copy(e_vals)
+                d_vals = copy.deepcopy(e_vals)
                 d_vals[d_vals <= 0] = nn_vals
                 d_vals = np.diag(d_vals)
                 matrix = np.matmul(np.matmul(e_vecs, d_vals), e_vecs.T)
