@@ -319,6 +319,7 @@ class Data:
                 self.grid_location_x = [min_x - ((max_y - min_y) - (max_x - min_x)) / 2]
                 self.grid_location_y = [min_y]
             self.premises_in_grid = [self.n_premises]
+            # For each true entry in continue_adapt, split the corresponding grid into 4 smaller grids of equal size
             continue_adapt = [True]
             while any(continue_adapt):
                 for idx in [i for i, c in enumerate(continue_adapt) if c]:
@@ -390,6 +391,7 @@ class Data:
                 self.grid_size = (edges_x[1] - edges_x[0]) * np.ones(len(unique_grid))
             else:
                 self.grid_size = self.grid_size * np.ones(len(unique_grid))
+
             # Assign premises to grid
             premises_in_grid = np.bincount(base_grid)
             birds_in_grid = np.bincount(base_grid, weights=np.sum(self.poultry_numbers, axis=0))
@@ -708,17 +710,17 @@ class ModelStructure:
             self.chain_string += self.data.region_names[self.data.select_region].replace(" ", "_") + '_'
         if self.data.select_county is not None:
             self.chain_string += self.data.county_names[self.data.select_county].replace(" ", "_") + '_'
-        if simulation:
-            if self.biosecurity:
-                self.chain_string += ('bio' + str(self.biosecurity_level) + '_' + str(self.biosecurity_duration) + '_' +
-                                      str(self.biosecurity_zone) + '_')
-            if self.vaccine is not None:
-                self.chain_string += 'v' + str(self.vaccine['doses']) + '_' + self.vaccine['strategy'] + '_teams' + str(
-                    self.vaccine['teams']) + '_' + str(self.vaccine['max_team_distance']) + '_eff' + str(
-                    int(100 * self.vaccine['efficacy_s'][0])) + '_' + str(
-                    int(100 * self.vaccine['efficacy_t'][0])) + '_'
-                if self.vaccine['silent'] > 0:
-                    self.chain_string += 'silent' + str(self.vaccine['silent']) + '_'
+        # if simulation:
+        #     if self.biosecurity:
+        #         self.chain_string += ('bio' + str(self.biosecurity_level) + '_' + str(self.biosecurity_duration) + '_' +
+        #                               str(self.biosecurity_zone) + '_')
+        #     if self.vaccine is not None:
+        #         self.chain_string += 'v' + str(self.vaccine['doses']) + '_' + self.vaccine['strategy'] + '_teams' + str(
+        #             self.vaccine['teams']) + '_' + str(self.vaccine['max_team_distance']) + '_eff' + str(
+        #             int(100 * self.vaccine['efficacy_s'][0])) + '_' + str(
+        #             int(100 * self.vaccine['efficacy_t'][0])) + '_'
+        #         if self.vaccine['silent'] > 0:
+        #             self.chain_string += 'silent' + str(self.vaccine['silent']) + '_'
 
     def get_season_times(self, t):
         return np.exp(-self.parameters.nu.values[0] * (1 + np.cos(2 * np.pi * ((t + self.data.date_start.timetuple().tm_yday) / 365 - self.parameters.nu.values[1]))))
@@ -1180,7 +1182,7 @@ class ModelSimulator:
             raise ValueError('model_structure or model_fitting are required')
         if model_structure is not None:
             self.model_structure = model_structure
-            self.model_structure.get_chain_string(0)
+            self.model_structure.get_chain_string(0, simulation=True)
             self.parameter_posterior = np.zeros(sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values()))
             i = 0
             for par_name, par in self.model_structure.parameters.fitted_parameters().items():
@@ -1209,6 +1211,7 @@ class ModelSimulator:
             self.transition_posterior = model_fitting.transition_posterior
             self.n_premises = self.model_fitting.model_structure.n_premises
             self.end_day = self.model_fitting.model_structure.data.end_day
+            self.n_cases = self.model_fitting.n_cases
         self.reps = reps
         self.initial_condition_type = initial_condition_type
         self.vaccine = vaccine
@@ -1218,13 +1221,11 @@ class ModelSimulator:
         self.report_day = [None for _ in range(reps)]
         self.infected_premises = [None for _ in range(reps)]
         if self.sellke:
-            if self.reps % 100 != 0:
-                raise ValueError("For Sellke simulations, reps currently must be a multiple of 100.")
-            self.resistances = np.tile(np.random.exponential(1, (100, self.model_structure.n_premises)), self.reps/100)
-            if self.reps / 100 > self.parameter_posterior.shape[0]:
-                self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps/100, replace=True), 100)
+            self.resistances = np.tile(np.random.exponential(1, (100, self.model_structure.n_premises)), np.ceil(self.reps/100))[:self.reps, :]
+            if np.ceil(self.reps / 100) > self.parameter_posterior.shape[0]:
+                self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=np.ceil(self.reps / 100).astype(int), replace=True), 100)[:self.reps]
             else:
-                self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps/100, replace=False), 100)
+                self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=np.ceil(self.reps / 100).astype(int), replace=False), 100)[:self.reps]
         else:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
 
@@ -1236,10 +1237,10 @@ class ModelSimulator:
             self.premises_status = np.zeros((self.end_day + 1, self.model_structure.n_premises), dtype=int)
             self.premises_status_days = np.zeros(self.n_premises, dtype=int)
             if (self.sellke and rep % 100 == 0) or not self.sellke:
-                fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep]], floc=0)
+                fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep], :self.n_cases], floc=0)
                 self.non_fixed_transitions = np.random.gamma(fit_a, fit_b, self.n_premises)
-                self.non_fixed_transitions[self.premises_posterior[self.post_idx[rep]]] = (
-                    self.transition_posterior)[self.post_idx[rep]]
+                self.non_fixed_transitions[self.premises_posterior[self.post_idx[rep], :self.n_cases].astype(int)] = (
+                    self.transition_posterior)[self.post_idx[rep], :self.n_cases]
             self.get_initial_conditions(rep)
             self.transmissibility = np.sum(self.model_structure.parameters.xi.values[:, np.newaxis] * (
                         self.model_structure.data.pop_over_mean ** self.model_structure.parameters.psi.values[:, np.newaxis]), axis=0)
@@ -1304,8 +1305,8 @@ class ModelSimulator:
         if self.sellke:
             for a in infectious_premises:
                 susceptibility_mask = self.premises_status[day, :] == 0
-                diffs = self.model_structure.data.location[:, susceptibility_mask] - self.model_structure.data.location[:, a]
-                distances2 = np.einsum('ij,ij->i', diffs, diffs)
+                diffs = self.model_structure.data.location[:, susceptibility_mask] - self.model_structure.data.location[:, a][:, np.newaxis]
+                distances2 = np.einsum('ij,ij->j', diffs, diffs)
                 if self.biosecurity or self.vaccine is not None:
                     sim_susceptibility = new_susceptibility[susceptibility_mask]
                 else:
@@ -1401,17 +1402,27 @@ class ModelSimulator:
 
     def save_projections(self, dir='../outputs/'):
         """Save the projections to files."""
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_day.npy', self.report_day_projections)
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_premises.npy', self.report_premises_projections)
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy', self.report_rep_projections.astype(int))
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}_report_time.npy', self.report_time_projections)
+        if self.sellke:
+            sellke_string = '_sellke'
+        else:
+            sellke_string = ''
+        rep_string = f'_reps{self.reps}'
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy', self.report_day_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy', self.report_premises_projections)
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy', self.report_rep_projections.astype(int))
+        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy', self.report_time_projections)
 
     def load_projections(self, dir='../outputs/'):
         """Load projections."""
-        self.report_day_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_day.npy')
-        self.report_premises_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_premises.npy')
-        self.report_rep_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_rep.npy')
-        self.report_time_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}_report_time.npy')
+        if self.sellke:
+            sellke_string = '_sellke'
+        else:
+            sellke_string = ''
+        rep_string = f'_reps{self.reps}'
+        self.report_day_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy')
+        self.report_premises_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy')
+        self.report_rep_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy')
+        self.report_time_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy')
 
 class Plotting:
     def __init__(self, model_fitting=None, model_simulator=None):

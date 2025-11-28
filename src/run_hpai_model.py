@@ -3,13 +3,17 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
-
 seed = 0
 np.random.seed(seed)
+
+# Choose options for running the model
 run_mcmc = False
 use_mcmc = True
 run_projections = True
-plot_projections = True
+sellke = False
+plots = False
+
+# Define time period
 data_start = pd.to_datetime('2022-10-01')
 data_end = pd.to_datetime('2023-09-30')
 
@@ -42,18 +46,22 @@ if use_mcmc:
 # Plot MCMC results
 if run_mcmc or use_mcmc:
     modelplotting = hpai_model.Plotting(modelfit)
-    modelplotting.plot_parameter_chains()
-    modelplotting.plot_parameter_posteriors()
+    if plots:
+        modelplotting.plot_parameter_chains()
+        modelplotting.plot_parameter_posteriors()
 
 # Get model projections
-modelsim = hpai_model.ModelSimulator(model, reps=10)
+if run_mcmc or use_mcmc:
+    modelsim = hpai_model.ModelSimulator(model_fitting=modelfit, reps=10, sellke=sellke)
+else:
+    modelsim = hpai_model.ModelSimulator(model_structure=model, reps=10, sellke=sellke)
 if run_projections:
     modelsim.run_model()
 else:
     modelsim.load_projections()
 
 # Plot model projections
-if plot_projections:
+if plots:
     modelplotting_sim = hpai_model.Plotting(model_simulator=modelsim)
     modelplotting_sim.plot_projections()
 
