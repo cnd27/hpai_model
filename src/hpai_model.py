@@ -1300,6 +1300,7 @@ class ModelSimulator:
                 self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=np.ceil(self.reps / 100).astype(int), replace=False), 100)[:self.reps]
         else:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
+            self.post_idx[0] = 405
 
     def run_model(self, save_results=True):
         """Run the infection model simulation."""
@@ -1314,11 +1315,16 @@ class ModelSimulator:
             self.premises_status_days = np.zeros(self.n_premises, dtype=int)
 
             # Set notification time by fitting gamma distribution to posterior samples
-            if (self.sellke and rep % 100 == 0) or not self.sellke:
-                fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep], :self.n_cases], floc=0)
-                self.non_fixed_transitions = np.random.gamma(fit_a, fit_b, self.n_premises)
-                self.non_fixed_transitions[self.premises_posterior[self.post_idx[rep], :self.n_cases].astype(int)] = (
-                    self.transition_posterior)[self.post_idx[rep], :self.n_cases]
+            fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep], :self.n_cases], floc=0)
+            self.non_fixed_transitions = np.random.gamma(fit_a, fit_b, self.n_premises)
+            self.non_fixed_transitions[self.premises_posterior[self.post_idx[rep], :self.n_cases].astype(int)] = (
+                self.transition_posterior)[self.post_idx[rep], :self.n_cases]
+
+            # Update model parameters to those from the posterior sample
+            i = 0
+            for par_name, par in self.model_structure.parameters.fitted_parameters().items():
+                par.values[par.fitted] = self.parameter_posterior[self.post_idx[rep], i:(i + np.sum(par.fitted))]
+                i += np.sum(par.fitted)
 
             # Initial conditions
             self.get_initial_conditions(rep)

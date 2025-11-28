@@ -9,8 +9,8 @@ np.random.seed(seed)
 # Choose options for running the model
 run_mcmc = False
 use_mcmc = True
-run_projections = False
-sellke = False
+run_projections = True
+sellke = True
 plots = True
 
 # Define time period
