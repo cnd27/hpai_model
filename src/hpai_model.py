@@ -800,7 +800,7 @@ class ModelFitting:
         current_neg_log_post = self.get_neg_log_likelihood()
         self.update_chain(current_neg_log_post)
         for iter in range(self.total_iterations):
-            print("MCMC iteration " + str(iter + 1))
+            print(f"MCMC iteration {iter + 1} of {self.total_iterations}")
             if np.isin(iter + 1, save_iter):
                 save = True
             else:
