@@ -20,7 +20,7 @@ hpai_model.py is the model code for fitting and simulations.
 
 ```bash
 git clone https://github.com/cnd27/hpai_model.git
-cd hpai_model.git
+cd hpai_model
 ```
 
 ### 2. Set up dependencies
