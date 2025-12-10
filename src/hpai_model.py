@@ -1,4 +1,4 @@
-"""Module for individual-based compartmental infection model for premises with HPAI."""
+"""Module for an individual-based compartmental infection model for premises with HPAI."""
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
@@ -20,7 +20,7 @@ class DataFilePaths:
     """
     Contains file paths required for data processing operations.
 
-    This class is stores file paths related to data categories.
+    This class stores file paths related to data categories.
 
     Attributes:
         premises: str
@@ -57,7 +57,7 @@ class DataLoader:
             premises data for a specific region by its index.
         select_county (Optional[int]): Optionally specifies a county filter to isolate
             premises data for a specific county by its index.
-        location (numpy.ndarray): (X,Y)-coordinates of premises locations.
+        location (numpy.ndarray): (X, Y)-coordinates of premises locations.
         poultry_numbers (numpy.ndarray): Matrix representing poultry counts for multiple
             species per premises.
         infected_premises (numpy.ndarray): Indices of premises reported as infected.
@@ -559,6 +559,9 @@ class ModelStructure:
             self.trans_priors_values = trans_priors_values
         self.non_fixed_transitions = np.zeros(self.data.infected_premises.shape[0])
 
+        # Initialise quantities
+        self.chain_string = None
+
     def kernel_function(self, distance2):
         """Calculate the kernel value for a given squared distance."""
         delta = self.parameters.delta.values
@@ -698,12 +701,12 @@ class ModelStructure:
                 if np.array(input_list[i]).shape != par_shapes[i]:
                     raise ValueError(f"{name}[{i}] has incorrect shape.")
 
-    def get_chain_string(self, iter, simulation=False):
+    def get_chain_string(self, iteration, simulation=False):
         """Generate a string identifier for the model configuration for saving outputs."""
         self.chain_string = (self.data.date_start.strftime('%Y%m%d') + '_' +
                              self.data.date_end.strftime('%Y%m%d') + '_' + self.kernel_type)
         if not simulation:
-            self.chain_string += '_' + str(iter)
+            self.chain_string += '_' + str(iteration)
         if self.parameters.rho is not None:
             self.chain_string += '_rho'
         if self.data.select_region is not None:
@@ -728,7 +731,7 @@ class ModelStructure:
 
 class ModelFitting:
     """Placeholder for the infection model fitting class."""
-    def __init__(self, model_structure, chain_number=0, total_iterations=211000, single_iterations=1000,
+    def __init__(self, model_structure, total_iterations=211000, single_iterations=1000,
                  burn_in=11000, occult_updates=0.05):
         # The burn-in period must be less than total iterations
         if burn_in >= total_iterations:
@@ -737,7 +740,6 @@ class ModelFitting:
         if single_iterations > total_iterations:
             raise ValueError("single_iterations must be less than or equal to total_iterations.")
         self.model_structure = model_structure
-        self.chain_number = chain_number
         self.total_iterations = total_iterations
         self.single_iterations = single_iterations
         self.burn_in = burn_in
@@ -749,6 +751,7 @@ class ModelFitting:
         self.report_day_past = model_structure.data.report_day[model_structure.data.report_day <= -self.model_structure.transitions[self.model_structure.data_compartments_idx[0] - 1]]
         self.n_cases = len(self.infected_premises)
         self.end_day = model_structure.data.end_day
+        self.chain_number = None
 
         # MCMC tuning parameters
         self.cov_rate = 10
@@ -777,18 +780,21 @@ class ModelFitting:
 
         # Initial chain string
         self.model_structure.get_chain_string(self.total_iterations)
+        self.n_to_fit = sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values())
 
     @property
     def exposure_day(self):
         """Calculate exposure day for infected premises based on report day and transitions."""
         return self.report_day - (sum(x for x in self.model_structure.transitions[:(self.model_structure.data_compartments_idx[0] - 1)] if x is not None) + np.round(self.non_fixed_transitions).astype(int))
 
-    def run_mcmc_chain(self, save_iter=None):
+    def run_mcmc_chain(self, chain_number=0, save_iter=None):
         """Run the MCMC fitting procedure."""
-        # Set up saving MCMC after given number of iterations
+        self.chain_number = chain_number
+        if not isinstance(self.chain_number, int):
+            raise ValueError("chain_number must be an integer. Run multiple chains separately.")
+        # Set up saving MCMC after a given number of iterations
         if save_iter is None:
             save_iter = np.array([self.total_iterations])
-        self.n_to_fit = sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values())
         init_pars = copy.deepcopy(self.model_structure.parameters)
         # Get initial random non-fixed transitions
         if self.model_structure.trans_priors_type == 'gamma':
@@ -809,17 +815,17 @@ class ModelFitting:
         self.update_chain(current_neg_log_post)
 
         # Begin MCMC iterations
-        for iter in range(self.total_iterations):
-            print(f"MCMC iteration {iter + 1} of {self.total_iterations}")
+        for iteration in range(self.total_iterations):
+            print(f"MCMC iteration {iteration + 1} of {self.total_iterations}")
             # Check if we need to save this iteration and get string
-            if np.isin(iter + 1, save_iter):
+            if np.isin(iteration + 1, save_iter):
                 save = True
             else:
                 save = False
-            self.model_structure.get_chain_string(iter + 1)
+            self.model_structure.get_chain_string(iteration + 1)
 
             # Do initial single parameter updates
-            if iter < self.single_iterations:
+            if iteration < self.single_iterations:
                 for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                     par_values = par.values[par.fitted]
                     par_log_values = par.log_values[par.fitted]
@@ -834,7 +840,7 @@ class ModelFitting:
                         par.values[np.where(par.fitted)[0][i]] = new_value
                         if np.array(par.prior_type)[par.fitted][i] == 'gamma':
                             neg_log_jacobian = -new_log_value + old_log_value
-                        elif np.array(par.prior_type)[par.fitted][i] == 'beta':
+                        else:
                             neg_log_jacobian = -new_log_value + old_log_value - np.log(1 - new_value) + np.log(1 - old_value)
 
                         # Calculate new posterior
@@ -846,14 +852,14 @@ class ModelFitting:
                             current_neg_log_post = new_neg_log_post
                             par.sigma[np.where(par.fitted)[0][i]] *= 1.4
                             accept += 1 / self.n_to_fit
-                            # print(f"Iteration {iter + 1}: Accepted {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
+                            # print(f"Iteration {iteration + 1}: Accepted {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
                         else:
-                            # print(f"Iteration {iter + 1}: Rejected {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
+                            # print(f"Iteration {iteration + 1}: Rejected {par_name}_{i} from {old_value:.4f} to {new_value:.4f}, LL: {current_neg_log_post:.2f}")
                             par.sigma[np.where(par.fitted)[0][i]] *= (1.4 ** -0.7857143)
                             par.values[np.where(par.fitted)[0][i]] = old_value
             else:
                 # Continue with multivariate parameter update
-                if iter == self.single_iterations:
+                if iteration == self.single_iterations:
                     for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                         par.sigma = np.diag(getattr(init_pars,par_name).sigma)
                 neg_log_jacobian = 0
@@ -868,7 +874,7 @@ class ModelFitting:
                     correlation = np.where((par.sigma[np.ix_(par.fitted, par.fitted)] == 0) | np.isnan(par.sigma[np.ix_(par.fitted, par.fitted)]), 0, correlation)
                     old_value = par.values[par.fitted]
                     old_log_value = par.log_values[par.fitted]
-                    new_log_value = old_log_value + np.random.multivariate_normal(np.zeros(len(old_log_value)), correlation) * (1 + (iter % 2) * (self.lambda_iter - 1)) * 2.38 * sd / np.sqrt(self.n_to_fit)
+                    new_log_value = old_log_value + np.random.multivariate_normal(np.zeros(len(old_log_value)), correlation) * (1 + (iteration % 2) * (self.lambda_iter - 1)) * 2.38 * sd / np.sqrt(self.n_to_fit)
                     new_value = self.get_exp(new_log_value, np.array(par.prior_type)[par.fitted])
                     par.values[np.where(par.fitted)[0]] = new_value
                     for i in range(len(new_value)):
@@ -880,20 +886,20 @@ class ModelFitting:
                 # Calculate new posterior after all parameters changed
                 new_neg_log_likelihood = self.get_neg_log_likelihood()
                 new_neg_log_post = new_neg_log_likelihood + self.get_neg_log_prior()
-                iter_2 = iter - self.single_iterations + 1
+                iter_2 = iteration - self.single_iterations + 1
 
                 # Accept or reject new parameter set
                 if current_neg_log_post - new_neg_log_post - neg_log_jacobian > np.log(np.random.uniform()):
                     current_neg_log_post = new_neg_log_post
-                    # print(f"Iteration {iter + 1}: Accepted, LL: {current_neg_log_post:.2f}")
+                    # print(f"Iteration {iteration + 1}: Accepted, LL: {current_neg_log_post:.2f}")
                     accept += 1
-                    if iter % 2 == 0:
+                    if iteration % 2 == 0:
                         self.lambda_iter *= (1 + self.lambda_rate / (self.lambda_rate + iter_2))
                 else:
-                    # print(f"Iteration {iter + 1}: Rejected, LL: {current_neg_log_post:.2f}")
+                    # print(f"Iteration {iteration + 1}: Rejected, LL: {current_neg_log_post:.2f}")
                     for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                         par.values[par.fitted] = getattr(current_pars, par_name).values[par.fitted]
-                    if iter % 2 == 1:
+                    if iteration % 2 == 1:
                         self.lambda_iter *= ((1 + self.lambda_rate / (self.lambda_rate + iter_2)) ** -0.305483)
 
                 # Update mean and covariance matrix
@@ -950,10 +956,10 @@ class ModelFitting:
                     # Accept or reject new transition time
                     if current_neg_log_post - new_neg_log_post - np.log(proposal) > np.log(np.random.uniform()):
                         current_neg_log_post = new_neg_log_post
-                        # print(f"Iteration {iter + 1}.{i}: Accepted change, LL: {current_neg_log_post:.2f}")
+                        # print(f"Iteration {iteration + 1}.{i}: Accepted change, LL: {current_neg_log_post:.2f}")
                         accept_notification[event] += 1
                     else:
-                        # print(f"Iteration {iter + 1}.{i}: Rejected change, LL: {current_neg_log_post:.2f}")
+                        # print(f"Iteration {iteration + 1}.{i}: Rejected change, LL: {current_neg_log_post:.2f}")
                         self.non_fixed_transitions[update_idx] = old_transition
                 elif event == 1:
                     # Add occult infection
@@ -972,10 +978,10 @@ class ModelFitting:
                     # Accept or reject new occult infection
                     if current_neg_log_post - new_neg_log_post + np.log(proposal) > np.log(np.random.uniform()):
                         current_neg_log_post = new_neg_log_post
-                        # print(f"Iteration {iter + 1}.{i}: Accepted addition, LL: {current_neg_log_post:.2f}")
+                        # print(f"Iteration {iteration + 1}.{i}: Accepted addition, LL: {current_neg_log_post:.2f}")
                         accept_notification[event] += 1
                     else:
-                        # print(f"Iteration {iter + 1}.{i}: Rejected addition, LL: {current_neg_log_post:.2f}")
+                        # print(f"Iteration {iteration + 1}.{i}: Rejected addition, LL: {current_neg_log_post:.2f}")
                         self.infected_premises = self.infected_premises[:-1]
                         self.non_fixed_transitions = self.non_fixed_transitions[:-1]
                         self.report_day = self.report_day[:-1]
@@ -997,10 +1003,10 @@ class ModelFitting:
                     # Accept or reject removal of occult infection
                     if current_neg_log_post - new_neg_log_post + np.log(proposal) > np.log(np.random.uniform()):
                         current_neg_log_post = new_neg_log_post
-                        # print(f"Iteration {iter + 1}.{i}: Accepted removal, LL: {current_neg_log_post:.2f}")
+                        # print(f"Iteration {iteration + 1}.{i}: Accepted removal, LL: {current_neg_log_post:.2f}")
                         accept_notification[event] += 1
                     else:
-                        # print(f"Iteration {iter + 1}.{i}: Rejected removal, LL: {current_neg_log_post:.2f}")
+                        # print(f"Iteration {iteration + 1}.{i}: Rejected removal, LL: {current_neg_log_post:.2f}")
                         self.infected_premises = np.insert(self.infected_premises, remove_idx, remove_premises)
                         self.non_fixed_transitions = np.insert(self.non_fixed_transitions, remove_idx, remove_transitions)
                         self.report_day = np.insert(self.report_day, remove_idx, self.end_day)
@@ -1008,12 +1014,12 @@ class ModelFitting:
             # Update MCMC chain with current values and save if required
             self.update_chain(current_neg_log_post)
             if save:
-                self.save_chain(iter + 1)
+                self.save_chain(iteration + 1)
 
-    def save_chain(self, length_of_chain, dir='../outputs/'):
+    def save_chain(self, length_of_chain, directory='../outputs/'):
         """Save the MCMC chains to files."""
-        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{self.chain_number}.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
-        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_parameters_{self.chain_number}.npy', self.parameter_chain[:, :(length_of_chain + 1)])
+        np.save(f'{directory}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{self.chain_number}.npy', self.neg_log_posterior_chain[:(length_of_chain + 1)])
+        np.save(f'{directory}mcmc_chain_{self.model_structure.chain_string}_parameters_{self.chain_number}.npy', self.parameter_chain[:, :(length_of_chain + 1)])
 
         #Convert premises_chain and transition_chain to arrays before saving
         max_length = max(len(arr) for arr in self.premises_chain[:(length_of_chain + 1)])
@@ -1023,10 +1029,10 @@ class ModelFitting:
             premises_array[:len(arr), i] = arr
         for i, arr in enumerate(self.transition_chain[:(length_of_chain + 1)]):
             transition_array[:len(arr), i] = arr
-        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_premises_{self.chain_number}.npy', premises_array)
-        np.save(f'{dir}mcmc_chain_{self.model_structure.chain_string}_transitions_{self.chain_number}.npy', transition_array)
+        np.save(f'{directory}mcmc_chain_{self.model_structure.chain_string}_premises_{self.chain_number}.npy', premises_array)
+        np.save(f'{directory}mcmc_chain_{self.model_structure.chain_string}_transitions_{self.chain_number}.npy', transition_array)
 
-    def load_chains(self, chain_numbers, values_per_chain=1000, dir='../outputs/'):
+    def load_chains(self, chain_numbers, values_per_chain=1000, directory='../outputs/'):
         """Load MCMC chains from files."""
         n_chains = len(chain_numbers)
         n_parameters = sum(np.sum(v.fitted) for v in self.model_structure.parameters.fitted_parameters().values())
@@ -1035,10 +1041,10 @@ class ModelFitting:
         premises_chains_tmp = [None for _ in range(n_chains)]
         transition_chains_tmp = [None for _ in range(n_chains)]
         for i in range(n_chains):
-            self.neg_log_posterior_chains[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{chain_numbers[i]}.npy')
-            self.parameter_chains[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_parameters_{chain_numbers[i]}.npy')
-            premises_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_premises_{chain_numbers[i]}.npy')
-            transition_chains_tmp[i] = np.load(f'{dir}mcmc_chain_{self.model_structure.chain_string}_transitions_{chain_numbers[i]}.npy')
+            self.neg_log_posterior_chains[i] = np.load(f'{directory}mcmc_chain_{self.model_structure.chain_string}_neg_log_post_{chain_numbers[i]}.npy')
+            self.parameter_chains[i] = np.load(f'{directory}mcmc_chain_{self.model_structure.chain_string}_parameters_{chain_numbers[i]}.npy')
+            premises_chains_tmp[i] = np.load(f'{directory}mcmc_chain_{self.model_structure.chain_string}_premises_{chain_numbers[i]}.npy')
+            transition_chains_tmp[i] = np.load(f'{directory}mcmc_chain_{self.model_structure.chain_string}_transitions_{chain_numbers[i]}.npy')
         max_length = max(arr.shape[0] for arr in premises_chains_tmp)
         self.premises_chains = np.inf * np.ones((n_chains, max_length, self.total_iterations + 1))
         self.transition_chains = np.inf * np.ones((n_chains, max_length, self.total_iterations + 1))
@@ -1058,16 +1064,16 @@ class ModelFitting:
     def update_chain(self, current_neg_log_post):
         """Update the MCMC chain with the current parameter values and likelihoods."""
         # Get first empty iteration in the chain
-        iter = np.sum(self.neg_log_posterior_chain != 0)
+        iteration = np.sum(self.neg_log_posterior_chain != 0)
 
         # Add latest values to the chain
-        self.neg_log_posterior_chain[iter] = current_neg_log_post
+        self.neg_log_posterior_chain[iteration] = current_neg_log_post
         i = 0
         for par_name, par in self.model_structure.parameters.fitted_parameters().items():
-            self.parameter_chain[i:(i+np.sum(par.fitted)), iter] = par.values[par.fitted]
+            self.parameter_chain[i:(i+np.sum(par.fitted)), iteration] = par.values[par.fitted]
             i += np.sum(par.fitted)
-        self.premises_chain[iter] = copy.deepcopy(self.infected_premises)
-        self.transition_chain[iter] = copy.deepcopy(self.non_fixed_transitions)
+        self.premises_chain[iteration] = copy.deepcopy(self.infected_premises)
+        self.transition_chain[iteration] = copy.deepcopy(self.non_fixed_transitions)
 
     def get_neg_log_likelihood(self, smart_update=False):
         """Calculate the negative log likelihood of the model."""
@@ -1129,7 +1135,6 @@ class ModelFitting:
             kernel_values = self.model_structure.kernel_function(distances2)
 
             # Split likelihood calculation into three components (exposure, non-exposure, notification time)
-            log_like_1 = 0
             log_like_2 = 0
             log_like_3 = 0
 
@@ -1146,21 +1151,21 @@ class ModelFitting:
             beta_ij = trans_j * susc_i * kernel_ij
 
             # Calculate which premises are in which infection classes at each exposure time
-            mask_I = (exposure_days_j + t0 <= exposure_days_i) & (exposure_days_i < report_days_j)
-            mask_N = (report_days_j <= exposure_days_i) & (exposure_days_i < report_days_j + t2)
-            mask_R = (report_days_j + t2 <= exposure_days_i)
+            mask_i = (exposure_days_j + t0 <= exposure_days_i) & (exposure_days_i < report_days_j)
+            mask_n = (report_days_j <= exposure_days_i) & (exposure_days_i < report_days_j + t2)
+            mask_r = (report_days_j + t2 <= exposure_days_i)
 
             # Get force of infection on infection premises when exposed
             gamma_0 = self.model_structure.parameters.gamma.values[0]  # gamma_0
             gamma_1 = self.model_structure.parameters.gamma.values[0] * self.model_structure.parameters.gamma.values[1]  # gamma_1
-            F_I = gamma_0 * beta_ij * mask_I  # (k, k)
-            F_N = gamma_1 * beta_ij * mask_N  # (k, k)
-            F_R = np.zeros_like(beta_ij)
+            f_i = gamma_0 * beta_ij * mask_i  # (k, k)
+            f_n = gamma_1 * beta_ij * mask_n  # (k, k)
+            f_r = np.zeros_like(beta_ij)
             if self.model_structure.parameters.rho is not None:
                 rho = self.model_structure.parameters.rho.values[0]
                 decay_term = np.exp(-rho * (exposure_days_i - (report_days_j + t2)))
-                F_R = gamma_1 * beta_ij * mask_R * decay_term  # (k, k)
-            force_of_infection = np.sum(F_I + F_N + F_R, axis=1)  # (k,) vector
+                f_r = gamma_1 * beta_ij * mask_r * decay_term  # (k, k)
+            force_of_infection = np.sum(f_i + f_n + f_r, axis=1)  # (k,) vector
             season_times_i = self.model_structure.get_season_times(self.exposure_day)  # (k,) vector
             exposure_rate = self.model_structure.parameters.epsilon.values[0] * season_times_i + force_of_infection
             log_like_1 = np.sum(np.log(exposure_rate))
@@ -1169,20 +1174,20 @@ class ModelFitting:
             for i in range(len(self.infected_premises)):
                 beta_values = transmissibility[i] * susceptibility * kernel_values[i]
                 # Get the number of days each premises is susceptible when the i-th premises is infectious
-                days_I = np.full(self.model_structure.n_premises, np.round(self.non_fixed_transitions[i]).astype(int))
-                days_I[self.infected_premises] = np.clip(self.exposure_day - (self.exposure_day[i] + t0), 0, np.round(self.non_fixed_transitions[i]).astype(int))
-                days_N = np.full(self.model_structure.n_premises, t2)
-                days_N[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i]), 0, t2)
-                if (self.model_structure.parameters.rho is not None):
-                    days_R = np.full(self.model_structure.n_premises, self.model_structure.data.end_day - (self.report_day[i] + t2))
-                    days_R[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i] + t2), 0, self.model_structure.data.end_day - (self.report_day[i] + t0))
-                    decay_R = beta_values[:, np.newaxis] * np.exp(-self.model_structure.parameters.rho.values * np.arange(self.report_day[i] + t2, self.end_day + 1)[np.newaxis, :])
-                    cols = np.arange(decay_R.shape[1])  # shape (20,)
-                    mask = cols[None, :] > days_R[:, None]
-                    decay_R[mask] = 0
-                    log_like_2 += -gamma_1 * np.sum(decay_R)
-                log_like_2 += -gamma_0 * np.sum(beta_values * days_I)
-                log_like_2 += -gamma_1 * np.sum(beta_values * days_N)
+                days_i = np.full(self.model_structure.n_premises, np.round(self.non_fixed_transitions[i]).astype(int))
+                days_i[self.infected_premises] = np.clip(self.exposure_day - (self.exposure_day[i] + t0), 0, np.round(self.non_fixed_transitions[i]).astype(int))
+                days_n = np.full(self.model_structure.n_premises, t2)
+                days_n[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i]), 0, t2)
+                if self.model_structure.parameters.rho is not None:
+                    days_r = np.full(self.model_structure.n_premises, self.model_structure.data.end_day - (self.report_day[i] + t2))
+                    days_r[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i] + t2), 0, self.model_structure.data.end_day - (self.report_day[i] + t0))
+                    decay_r = beta_values[:, np.newaxis] * np.exp(-self.model_structure.parameters.rho.values * np.arange(self.report_day[i] + t2, self.end_day + 1)[np.newaxis, :])
+                    cols = np.arange(decay_r.shape[1])  # shape (20,)
+                    mask = cols[None, :] > days_r[:, None]
+                    decay_r[mask] = 0
+                    log_like_2 += -gamma_1 * np.sum(decay_r)
+                log_like_2 += -gamma_0 * np.sum(beta_values * days_i)
+                log_like_2 += -gamma_1 * np.sum(beta_values * days_n)
             log_like_2 += -self.model_structure.parameters.epsilon.values[0] * all_season_times
 
             # Get likelihood of notification times
@@ -1194,7 +1199,7 @@ class ModelFitting:
             # Sum likelihood components and cache results
             neg_log_like = -(log_like_1 + log_like_2 + log_like_3)
             self._cached_parameters = current_parameters
-            self._cached_neg_log_likelihoods = neg_log_like
+            self._cached_neg_log_likelihood = neg_log_like
             self._cached_infected_premises = copy.deepcopy(self.infected_premises)
             self._cached_non_fixed_transitions = copy.deepcopy(self.non_fixed_transitions)
             self._cached_first_exposure = first_exposure
@@ -1234,11 +1239,11 @@ class ModelFitting:
                 matrix = np.matmul(np.matmul(e_vecs, d_vals), e_vecs.T)
         return matrix
 
-    def get_exp(self, values, type):
+    def get_exp(self, values, exp_type):
         """Get the exponentiated values based on prior type."""
         # Reverse log transform for gamma and logit transform for beta
         exp_values = np.exp(values)
-        exp_values[type == 'beta'] = exp_values[type == 'beta'] / (1 + exp_values[type == 'beta'])
+        exp_values[exp_type == 'beta'] = exp_values[exp_type == 'beta'] / (1 + exp_values[exp_type == 'beta'])
         return exp_values
 
 class ModelSimulator:
@@ -1291,6 +1296,26 @@ class ModelSimulator:
         self.exposure_day = [None for _ in range(reps)]
         self.report_day = [None for _ in range(reps)]
         self.infected_premises = [None for _ in range(reps)]
+        self.report_day_projections = None
+        self.report_premises_projections = None
+        self.report_rep_projections = np.array([])
+        self.report_time_projections = None
+        self.non_fixed_transitions = None
+        
+        # Initialise status of premises and time in current status
+        self.premises_status = np.zeros((self.end_day + 1, self.model_structure.n_premises), dtype=int)
+        self.premises_status_days = np.zeros(self.n_premises, dtype=int)
+
+        # Initialise transmissibility, susceptibility and grid attributes
+        self.transmissibility = None
+        self.susceptibility = None
+        self.max_susceptibility_grid = None
+        self.max_transmission_grid = None
+        self.gamma = None
+        self.max_transmission_grid = None
+        self.u_ab = None
+        self.max_rate_grid = None
+        
         # Get the indices of the posterior samples to use for each replicate (and Sellke resistances)
         if self.sellke:
             self.resistances = np.tile(np.random.exponential(1, (100, self.model_structure.n_premises)), np.ceil(self.reps/100))[:self.reps, :]
@@ -1298,6 +1323,7 @@ class ModelSimulator:
                 self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=np.ceil(self.reps / 100).astype(int), replace=True), 100)[:self.reps]
             else:
                 self.post_idx = np.repeat(np.random.choice(range(self.parameter_posterior.shape[0]), size=np.ceil(self.reps / 100).astype(int), replace=False), 100)[:self.reps]
+            self.cumulative_hazard = np.zeros(self.model_structure.n_premises)
         else:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
             self.post_idx[0] = 405
@@ -1307,12 +1333,6 @@ class ModelSimulator:
         # Run realisation for each replicate
         for rep in range(self.reps):
             print(f"Simulation {rep + 1} of {self.reps}")
-            if self.sellke:
-                self.cumulative_hazard = np.zeros(self.model_structure.n_premises)
-
-            # Initialise status of premises and time in current status
-            self.premises_status = np.zeros((self.end_day + 1, self.model_structure.n_premises), dtype=int)
-            self.premises_status_days = np.zeros(self.n_premises, dtype=int)
 
             # Set notification time by fitting gamma distribution to posterior samples
             fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep], :self.n_cases], floc=0)
@@ -1358,7 +1378,6 @@ class ModelSimulator:
         # Compile results from all replicates
         self.report_day_projections = np.concatenate(self.report_day)
         self.report_premises_projections = np.concatenate(self.infected_premises)
-        self.report_rep_projections = np.array([])
         for i, reports in enumerate(self.report_day):
             report_length = len(reports)
             self.report_rep_projections = np.append(self.report_rep_projections, np.full(report_length, i, dtype=int))
@@ -1433,8 +1452,8 @@ class ModelSimulator:
 
             # Loop over infectious grids
             for a_i, a in enumerate(infectious_grids):
-                N_a = infectious_premises[self.model_structure.data.premises_grid[infectious_premises] == a]
-                n_a = len(N_a)
+                num_a = infectious_premises[self.model_structure.data.premises_grid[infectious_premises] == a]
+                n_a = len(num_a)
                 w_ab = 1 - (1 - self.u_ab[a, :]) ** n_a
 
                 # Loop over susceptible grids
@@ -1445,61 +1464,61 @@ class ModelSimulator:
                     # If no samples, skip to next grid
                     if n_sample > 0:
                         # Consider susceptible premises in grid b
-                        N_b = np.where((self.model_structure.data.premises_grid == b) & (self.premises_status[day, :] == 0))[0]
-                        N_sample = np.random.choice(N_b, n_sample, replace=False)
-                        K_ij = self.model_structure.kernel_function(np.sum((self.model_structure.data.location[:, N_a, np.newaxis] - self.model_structure.data.location[:, np.newaxis, N_sample]) ** 2, axis=0))
+                        num_b = np.where((self.model_structure.data.premises_grid == b) & (self.premises_status[day, :] == 0))[0]
+                        num_sample = np.random.choice(num_b, n_sample, replace=False)
+                        k_ij = self.model_structure.kernel_function(np.sum((self.model_structure.data.location[:, num_a, np.newaxis] - self.model_structure.data.location[:, np.newaxis, num_sample]) ** 2, axis=0))
 
                         # Get probability of exposure from all infectious premises in grid a to sampled susceptible premises in grid b
                         p_ij = np.zeros((n_a, n_sample))
                         if self.biosecurity or self.vaccine is not None:
-                            sim_susceptibility = new_susceptibility[N_sample]
+                            sim_susceptibility = new_susceptibility[num_sample]
                         else:
-                            sim_susceptibility = self.susceptibility[N_sample]
-                        p_ij[self.premises_status[day, N_a] != 4, :] = (
-                                1 - np.exp(-sim_susceptibility * self.gamma[self.premises_status[day, N_a[self.premises_status[day, N_a] != 4]] - 2, np.newaxis] *
-                                new_transmissibility[N_a[self.premises_status[day, N_a] != 4], np.newaxis] *
-                                season_time * K_ij[self.premises_status[day, N_a] != 4]))
+                            sim_susceptibility = self.susceptibility[num_sample]
+                        p_ij[self.premises_status[day, num_a] != 4, :] = (
+                                1 - np.exp(-sim_susceptibility * self.gamma[self.premises_status[day, num_a[self.premises_status[day, num_a] != 4]] - 2, np.newaxis] *
+                                new_transmissibility[num_a[self.premises_status[day, num_a] != 4], np.newaxis] *
+                                season_time * k_ij[self.premises_status[day, num_a] != 4]))
                         if self.model_structure.parameters.rho is not None:
                             days_since = np.exp(-(1 / self.model_structure.parameters.rho.values[0]) * (1 + self.premises_status_days[
-                                N_a[self.premises_status[day, N_a] == 4]]))[:, np.newaxis]
-                            p_ij[self.premises_status[day, N_a] == 4, :] = 1 - np.exp(
-                                -sim_susceptibility * self.gamma[self.premises_status[day, N_a[self.premises_status[day, N_a] == 4]] - 2, np.newaxis] *
-                                new_transmissibility[N_a[self.premises_status[day, N_a] == 4], np.newaxis] * days_since * season_time * K_ij[
-                                    self.premises_status[day, N_a] == 4])
+                                num_a[self.premises_status[day, num_a] == 4]]))[:, np.newaxis]
+                            p_ij[self.premises_status[day, num_a] == 4, :] = 1 - np.exp(
+                                -sim_susceptibility * self.gamma[self.premises_status[day, num_a[self.premises_status[day, num_a] == 4]] - 2, np.newaxis] *
+                                new_transmissibility[num_a[self.premises_status[day, num_a] == 4], np.newaxis] * days_since * season_time * k_ij[
+                                    self.premises_status[day, num_a] == 4])
 
                         # Get overall probability of exposure from all infectious premises in grid a to sampled susceptible premises in grid b
                         p_aj = 1 - np.prod(1 - p_ij, axis=0)
 
                         # Determine which sampled susceptible premises become exposed
-                        exp_mask = N_sample[np.random.rand(n_sample) < p_aj / w_ab[b]]
+                        exp_mask = num_sample[np.random.rand(n_sample) < p_aj / w_ab[b]]
                         expose_event[exp_mask] = True
 
                 # Now consider susceptible premises in the same grid as the infectious premises
-                N_b = np.where((self.model_structure.data.premises_grid == a) & (self.premises_status[day, :] == 0))[0]
+                num_b = np.where((self.model_structure.data.premises_grid == a) & (self.premises_status[day, :] == 0))[0]
                 n_b = sus_in_grid[a]
-                K_ij = self.model_structure.kernel_function(np.sum((self.model_structure.data.location[:, N_a, np.newaxis] -
-                                                                    self.model_structure.data.location[:, np.newaxis, N_b]) ** 2, axis=0))
+                k_ij = self.model_structure.kernel_function(np.sum((self.model_structure.data.location[:, num_a, np.newaxis] -
+                                                                    self.model_structure.data.location[:, np.newaxis, num_b]) ** 2, axis=0))
 
                 # Get probability of exposure from all infectious premises in grid a to susceptible premises in grid a
                 p_ij = np.zeros((n_a, n_b))
                 if self.biosecurity or self.vaccine is not None:
-                    sim_susceptibility = new_susceptibility[N_b]
+                    sim_susceptibility = new_susceptibility[num_b]
                 else:
-                    sim_susceptibility = self.susceptibility[N_b]
-                p_ij[self.premises_status[day, N_a] != 4, :] = 1 - np.exp(
-                    -sim_susceptibility * self.gamma[self.premises_status[day, N_a[self.premises_status[day, N_a] != 4]] - 2, np.newaxis] *
-                    new_transmissibility[N_a[self.premises_status[day, N_a] != 4], np.newaxis] * season_time * K_ij[self.premises_status[day, N_a] != 4])
+                    sim_susceptibility = self.susceptibility[num_b]
+                p_ij[self.premises_status[day, num_a] != 4, :] = 1 - np.exp(
+                    -sim_susceptibility * self.gamma[self.premises_status[day, num_a[self.premises_status[day, num_a] != 4]] - 2, np.newaxis] *
+                    new_transmissibility[num_a[self.premises_status[day, num_a] != 4], np.newaxis] * season_time * k_ij[self.premises_status[day, num_a] != 4])
                 if self.model_structure.parameters.rho is not None:
                     days_since = np.exp(-(1 / self.model_structure.parameters.rho.values[0]) * (1 + self.premises_status_days[
-                        N_a[self.premises_status[day, N_a] == 4]]))[:, np.newaxis]
-                    p_ij[self.premises_status[day, N_a] == 4, :] = 1 - np.exp(
-                        -sim_susceptibility * self.gamma[self.premises_status[day, N_a[self.premises_status[day, N_a] == 4]] - 2, np.newaxis] *
-                        new_transmissibility[N_a[self.premises_status[day, N_a] == 4], np.newaxis] * days_since * season_time *
-                        K_ij[self.premises_status[day, N_a] == 4])
+                        num_a[self.premises_status[day, num_a] == 4]]))[:, np.newaxis]
+                    p_ij[self.premises_status[day, num_a] == 4, :] = 1 - np.exp(
+                        -sim_susceptibility * self.gamma[self.premises_status[day, num_a[self.premises_status[day, num_a] == 4]] - 2, np.newaxis] *
+                        new_transmissibility[num_a[self.premises_status[day, num_a] == 4], np.newaxis] * days_since * season_time *
+                        k_ij[self.premises_status[day, num_a] == 4])
                 p_aj = 1 - np.prod(1 - p_ij, axis=0)
 
                 # Determine which susceptible premises become exposed
-                exp_mask = N_b[np.random.rand(n_b) < p_aj]
+                exp_mask = num_b[np.random.rand(n_b) < p_aj]
                 expose_event[exp_mask] = True
 
         # Update premises status and days in current status
@@ -1539,29 +1558,29 @@ class ModelSimulator:
         else:
             raise ValueError("Only initial_condition_type 0 (initial infected from posterior) is currently implemented.")
 
-    def save_projections(self, dir='../outputs/'):
+    def save_projections(self, directory='../outputs/'):
         """Save the projections to files."""
         if self.sellke:
             sellke_string = '_sellke'
         else:
             sellke_string = ''
         rep_string = f'_reps{self.reps}'
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy', self.report_day_projections)
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy', self.report_premises_projections)
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy', self.report_rep_projections.astype(int))
-        np.save(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy', self.report_time_projections)
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy', self.report_day_projections)
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy', self.report_premises_projections)
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy', self.report_rep_projections.astype(int))
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy', self.report_time_projections)
 
-    def load_projections(self, dir='../outputs/'):
+    def load_projections(self, directory='../outputs/'):
         """Load projections."""
         if self.sellke:
             sellke_string = '_sellke'
         else:
             sellke_string = ''
         rep_string = f'_reps{self.reps}'
-        self.report_day_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy')
-        self.report_premises_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy')
-        self.report_rep_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy')
-        self.report_time_projections = np.load(f'{dir}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy')
+        self.report_day_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy')
+        self.report_premises_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy')
+        self.report_rep_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy')
+        self.report_time_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy')
 
 class Plotting:
     def __init__(self, model_fitting=None, model_simulator=None):
@@ -1578,7 +1597,7 @@ class Plotting:
         if self.model_fitting is None:
             raise ValueError("model_fitting is required to plot parameter chains.")
         n_parameters = self.model_fitting.parameter_posterior.shape[1]
-        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
+        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters / np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
         i = 0
         for par_name, par in self.model_structure.parameters.fitted_parameters().items():
             for j in range(np.sum(par.fitted)):
@@ -1594,7 +1613,7 @@ class Plotting:
         if self.model_fitting is None:
             raise ValueError("model_fitting is required to plot parameter posteriors.")
         n_parameters = self.model_fitting.parameter_posterior.shape[1]
-        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters/np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
+        fig, ax = plt.subplots(np.ceil(np.sqrt(n_parameters)).astype(int), np.ceil(n_parameters / np.ceil(np.sqrt(n_parameters))).astype(int), figsize=(10, 10))
         i = 0
         for par_name, par in self.model_structure.parameters.fitted_parameters().items():
             for j in range(np.sum(par.fitted)):
