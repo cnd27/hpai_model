@@ -14,6 +14,7 @@ import copy
 import geopandas as gpd
 from shapely.geometry import Point
 # from numba import njit
+# give error on warning
 
 
 class DataFilePaths:
@@ -717,7 +718,7 @@ class ModelStructure:
         #     if self.biosecurity:
         #         self.chain_string += ('bio' + str(self.biosecurity_level) + '_' + str(self.biosecurity_duration) + '_' +
         #                               str(self.biosecurity_zone) + '_')
-        #     if self.vaccine is not None:
+        #     if self.intervention is not None:
         #         self.chain_string += 'v' + str(self.vaccine['doses']) + '_' + self.vaccine['strategy'] + '_teams' + str(
         #             self.vaccine['teams']) + '_' + str(self.vaccine['max_team_distance']) + '_eff' + str(
         #             int(100 * self.vaccine['efficacy_s'][0])) + '_' + str(
@@ -796,7 +797,7 @@ class ModelFitting:
         if save_iter is None:
             save_iter = np.array([self.total_iterations])
         init_pars = copy.deepcopy(self.model_structure.parameters)
-        # Get initial random non-fixed transitions
+        # Get initial random non-fixed transitions (default to gamma distribution)
         if self.model_structure.trans_priors_type == 'gamma':
             self.non_fixed_transitions = np.random.gamma(self.model_structure.trans_priors_values[0],
                                                        self.model_structure.trans_priors_values[1],
@@ -811,13 +812,14 @@ class ModelFitting:
         accept_notification = np.zeros(3)
         update_notification = np.zeros(3)
         current_neg_log_post = self.get_neg_log_likelihood()
+
         # Save initial state to the first entry in the chain
         self.update_chain(current_neg_log_post)
 
         # Begin MCMC iterations
         for iteration in range(self.total_iterations):
             print(f"MCMC iteration {iteration + 1} of {self.total_iterations}")
-            # Check if we need to save this iteration and get string
+            # Check if we need to save this iteration and get string for the iteration
             if np.isin(iteration + 1, save_iter):
                 save = True
             else:
@@ -874,7 +876,7 @@ class ModelFitting:
                     correlation = np.where((par.sigma[np.ix_(par.fitted, par.fitted)] == 0) | np.isnan(par.sigma[np.ix_(par.fitted, par.fitted)]), 0, correlation)
                     old_value = par.values[par.fitted]
                     old_log_value = par.log_values[par.fitted]
-                    new_log_value = old_log_value + np.random.multivariate_normal(np.zeros(len(old_log_value)), correlation) * (1 + (iteration % 2) * (self.lambda_iter - 1)) * 2.38 * sd / np.sqrt(self.n_to_fit)
+                    new_log_value = old_log_value + np.random.multivariate_normal(np.zeros(len(old_log_value)), correlation) * (1 + (iteration % 2) * (self.lambda_iter - 1)) * 2.38 * sd / np.sqrt(len(sd))
                     new_value = self.get_exp(new_log_value, np.array(par.prior_type)[par.fitted])
                     par.values[np.where(par.fitted)[0]] = new_value
                     for i in range(len(new_value)):
@@ -886,32 +888,32 @@ class ModelFitting:
                 # Calculate new posterior after all parameters changed
                 new_neg_log_likelihood = self.get_neg_log_likelihood()
                 new_neg_log_post = new_neg_log_likelihood + self.get_neg_log_prior()
-                iter_2 = iteration - self.single_iterations + 1
+                iteration_2 = iteration - self.single_iterations + 1
 
                 # Accept or reject new parameter set
                 if current_neg_log_post - new_neg_log_post - neg_log_jacobian > np.log(np.random.uniform()):
                     current_neg_log_post = new_neg_log_post
                     # print(f"Iteration {iteration + 1}: Accepted, LL: {current_neg_log_post:.2f}")
                     accept += 1
-                    if iteration % 2 == 0:
-                        self.lambda_iter *= (1 + self.lambda_rate / (self.lambda_rate + iter_2))
+                    if iteration % 2 == 1:
+                        self.lambda_iter *= (1 + self.lambda_rate / (self.lambda_rate + iteration_2))
                 else:
                     # print(f"Iteration {iteration + 1}: Rejected, LL: {current_neg_log_post:.2f}")
                     for par_name, par in self.model_structure.parameters.fitted_parameters().items():
                         par.values[par.fitted] = getattr(current_pars, par_name).values[par.fitted]
                     if iteration % 2 == 1:
-                        self.lambda_iter *= ((1 + self.lambda_rate / (self.lambda_rate + iter_2)) ** -0.305483)
+                        self.lambda_iter *= ((1 + self.lambda_rate / (self.lambda_rate + iteration_2)) ** -0.305483)
 
                 # Update mean and covariance matrix
                 for par_name, par in self.model_structure.parameters.fitted_parameters().items():
-                    new_mu = (iter_2 / (iter_2 + 1)) * par.mu[par.fitted]  + par.log_values[par.fitted] / (iter_2 + 1)
+                    new_mu = (iteration_2 / (iteration_2 + 1)) * par.mu[par.fitted] + par.log_values[par.fitted] / (iteration_2 + 1)
                     ss_pars = np.outer(par.log_values[par.fitted], par.log_values[par.fitted])
                     ss_mu = np.outer(par.mu[par.fitted], par.mu[par.fitted])
                     ss_new_mu = np.outer(new_mu, new_mu)
                     par.mu[par.fitted] = copy.deepcopy(new_mu)
-                    par.sigma[np.ix_(par.fitted, par.fitted)] = ((iter_2 - 1 + self.cov_rate) * par.sigma[np.ix_(par.fitted, par.fitted)] + iter_2 * ss_mu - (iter_2 + 1) * ss_new_mu + ss_pars) / (iter_2 + self.cov_rate)
+                    par.sigma[np.ix_(par.fitted, par.fitted)] = ((iteration_2 - 1 + self.cov_rate) * par.sigma[np.ix_(par.fitted, par.fitted)] + iteration_2 * ss_mu - (iteration_2 + 1) * ss_new_mu + ss_pars) / (iteration_2 + self.cov_rate)
 
-                    #Ensure covariance matrix is positive definite
+                    # Ensure covariance matrix is positive definite
                     par.sigma[np.ix_(par.fitted, par.fitted)]  = self.symmetric_pos_def(par.sigma[np.ix_(par.fitted, par.fitted)])
 
             # Update occult infection premises
@@ -1054,8 +1056,12 @@ class ModelFitting:
             self.transition_chains[i, :max_length_i, :] = transition_chains_tmp[i]
 
         # Get posterior samples by values_per_chain after burn-in
-        choose_samples = np.arange(self.burn_in + 1, self.total_iterations + 1,
-                                   (self.total_iterations - self.burn_in - 1) / (values_per_chain - 1)).astype(int)
+        if values_per_chain > (self.total_iterations - self.burn_in - 1):
+            choose_samples = np.arange(self.burn_in + 1, self.total_iterations + 1).astype(int)
+            values_per_chain = self.total_iterations - self.burn_in
+        else:
+            choose_samples = np.arange(self.burn_in + 1, self.total_iterations + 1,
+                                       (self.total_iterations - self.burn_in - 1) / (values_per_chain - 1)).astype(int)
         self.neg_log_posterior_posterior = self.neg_log_posterior_chains[:, choose_samples].flatten()
         self.parameter_posterior = self.parameter_chains[:, :, choose_samples].transpose(0, 2, 1).reshape(n_chains * values_per_chain, n_parameters)
         self.premises_posterior = self.premises_chains[:, :, choose_samples].transpose(0, 2, 1).reshape(n_chains * values_per_chain, max_length)
@@ -1249,7 +1255,7 @@ class ModelFitting:
 class ModelSimulator:
     """Placeholder for the infection model simulation class."""
     def __init__(self, model_structure=None, model_fitting=None, reps=10000, initial_condition_type=0, sellke=False,
-                 vaccine=None, biosecurity=None):
+                 intervention=None):
 
         # Use model_structure (for given parameter values) or model_fitting (for sampling from posterior) to set up simulation
         if model_structure is None and model_fitting is None:
@@ -1290,8 +1296,7 @@ class ModelSimulator:
             self.n_cases = self.model_fitting.n_cases
         self.reps = reps
         self.initial_condition_type = initial_condition_type
-        self.vaccine = vaccine
-        self.biosecurity = biosecurity
+        self.intervention = intervention
         self.sellke = sellke
         self.exposure_day = [None for _ in range(reps)]
         self.report_day = [None for _ in range(reps)]
@@ -1328,7 +1333,7 @@ class ModelSimulator:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
             self.post_idx[0] = 405
 
-    def run_model(self, save_results=True):
+    def run_model(self, save_results=True, intervention=None):
         """Run the infection model simulation."""
         # Run realisation for each replicate
         for rep in range(self.reps):
@@ -1391,10 +1396,8 @@ class ModelSimulator:
         # Get seasonal adjustment
         season_time = self.model_structure.get_season_times(day)
         # Determine susceptibility and transmissibility adjustment to interventions
-        if self.vaccine is not None:
+        if self.intervention is not None:
             raise NotImplementedError("Vaccination not yet implemented in ModelSimulator.")
-        elif self.biosecurity is not None:
-            raise NotImplementedError("Biosecurity not yet implemented in ModelSimulator.")
         else:
             new_transmissibility = self.transmissibility
             new_susceptibility = self.susceptibility
@@ -1434,7 +1437,7 @@ class ModelSimulator:
                 # Get distance between given infectious premises and all susceptible premises
                 diffs = self.model_structure.data.location[:, susceptibility_mask] - self.model_structure.data.location[:, a][:, np.newaxis]
                 distances2 = np.einsum('ij,ij->j', diffs, diffs)
-                if self.biosecurity or self.vaccine is not None:
+                if self.intervention is not None:
                     sim_susceptibility = new_susceptibility[susceptibility_mask]
                 else:
                     sim_susceptibility = self.susceptibility[susceptibility_mask]
@@ -1470,7 +1473,7 @@ class ModelSimulator:
 
                         # Get probability of exposure from all infectious premises in grid a to sampled susceptible premises in grid b
                         p_ij = np.zeros((n_a, n_sample))
-                        if self.biosecurity or self.vaccine is not None:
+                        if self.intervention is not None:
                             sim_susceptibility = new_susceptibility[num_sample]
                         else:
                             sim_susceptibility = self.susceptibility[num_sample]
@@ -1501,7 +1504,7 @@ class ModelSimulator:
 
                 # Get probability of exposure from all infectious premises in grid a to susceptible premises in grid a
                 p_ij = np.zeros((n_a, n_b))
-                if self.biosecurity or self.vaccine is not None:
+                if self.intervention is not None:
                     sim_susceptibility = new_susceptibility[num_b]
                 else:
                     sim_susceptibility = self.susceptibility[num_b]
@@ -1535,7 +1538,7 @@ class ModelSimulator:
         self.exposure_day[rep] = np.append(self.exposure_day[rep], np.full(np.sum((self.premises_status[day, :] == 0) & expose_event), day))
 
     def get_initial_conditions(self, rep):
-        '''Set the initial conditions for the simulation.'''
+        """Set the initial conditions for the simulation."""
         if self.initial_condition_type == 0:
 
             # Use data on report days to set initial infected premises and their exposure days on day 0
@@ -1558,7 +1561,7 @@ class ModelSimulator:
         else:
             raise ValueError("Only initial_condition_type 0 (initial infected from posterior) is currently implemented.")
 
-    def save_projections(self, directory='../outputs/'):
+    def save_projections(self, directory='../outputs/', intervention=None):
         """Save the projections to files."""
         if self.sellke:
             sellke_string = '_sellke'
@@ -1570,7 +1573,7 @@ class ModelSimulator:
         np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy', self.report_rep_projections.astype(int))
         np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy', self.report_time_projections)
 
-    def load_projections(self, directory='../outputs/'):
+    def load_projections(self, directory='../outputs/', intervention=None):
         """Load projections."""
         if self.sellke:
             sellke_string = '_sellke'
@@ -1582,9 +1585,120 @@ class ModelSimulator:
         self.report_rep_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy')
         self.report_time_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy')
 
+class Intervention:
+    """Placeholder for intervention class for vaccination and biosecurity."""
+    def __init__(self, intervention_type=None, intervention_start=None, intervention_end=None,
+                 efficacy_s=None, efficacy_t=None, biosecurity_zone=None, biosecurity_time=None,
+                 vaccine_strategy=None, vaccine_teams=None, max_vaccinations_per_day=None, max_distance_travelled=None,
+                 vaccine_delay=None, vaccine_birds=None, vaccine_proportion=None, vaccine_regions=None,
+                 vaccine_silent_transmission=None):
+        """Initialize intervention class with specified parameters."""
+        # Intervention type is biosecurity, vaccine, or None
+        allowed_interventions = {"biosecurity", "vaccine", None}
+        if intervention_type not in allowed_interventions:
+            raise ValueError(
+                f"Intervention has invalid type: {intervention_type}. "
+                f"Allowed types are {sorted(allowed_interventions)}."
+            )
+        self.intervention_type = intervention_type
+
+        # Intervention start and end days are integers
+        if intervention_start is None:
+            intervention_start = 0
+        if not isinstance(intervention_start, int):
+            raise ValueError("Intervention start day must be an integer.")
+        self.intervention_start = intervention_start
+        if intervention_end is None:
+            intervention_end = np.inf
+        if not isinstance(intervention_end, int) and intervention_end != np.inf:
+            raise ValueError("Intervention end day must be an integer or inf.")
+        self.intervention_end = intervention_end
+
+        # Efficacy parameters for susceptibility and transmissibility for each species type
+        if efficacy_s is None:
+            efficacy_s = [0.1, 0.1, 0.1]
+        self.efficacy_s = efficacy_s
+        if efficacy_t is None:
+            if self.intervention_type == "vaccine":
+                efficacy_t = [0.1, 0.1, 0.1]
+            else:
+                efficacy_t = [1, 1, 1]
+        self.efficacy_t = efficacy_t
+
+        # Biosecurity parameters for size of zone and time of effect
+        if intervention_type == "biosecurity":
+            if biosecurity_zone is None:
+                biosecurity_zone = 10.0
+            if not (isinstance(biosecurity_zone, (int, float)) and biosecurity_zone > 0) and biosecurity_zone not in {"county", "region", "GB"}:
+                raise ValueError("Biosecurity zone must be a positive number or 'county', 'region', or 'GB'.")
+            self.biosecurity_zone = biosecurity_zone
+            if biosecurity_time is None:
+                biosecurity_time = 14
+            if not isinstance(biosecurity_time, int) or biosecurity_time <= 0:
+                raise ValueError("Biosecurity time must be a positive integer.")
+            self.biosecurity_time = biosecurity_time
+
+        # Vaccine parameters
+        if intervention_type == "vaccine":
+            if vaccine_strategy is None:
+                vaccine_strategy = "ring_latest_3.0"
+            if vaccine_strategy not in {"random", "bird_numbers", "bird_density", "farm_density", "case_density"}:
+                if not vaccine_strategy.startswith("ring_") and not vaccine_strategy.split('_')[1] not in {"random", "in", "out"} and not vaccine_strategy.split('_')[2].replace('.', '', 1).isdigit():
+                    raise ValueError("Vaccine strategy must be 'random', 'bird_numbers', 'bird_density', 'farm_density', 'case_density', or be of the form 'ring_<random/in/out>_<radius>'.")
+            self.vaccine_strategy = vaccine_strategy
+            if vaccine_teams is None:
+                vaccine_teams = 1
+            if not isinstance(vaccine_teams, int) or vaccine_teams <= 0:
+                raise ValueError("The number of vaccine teams must be a positive integer.")
+            self.vaccine_teams = vaccine_teams
+            if max_vaccinations_per_day is None:
+                max_vaccinations_per_day = 200000
+            if not isinstance(max_vaccinations_per_day, int) or max_vaccinations_per_day <= 0:
+                raise ValueError("The number of vaccine doses per day must be a positive integer.")
+            self.max_vaccinations_per_day = max_vaccinations_per_day
+            if max_distance_travelled is None:
+                max_distance_travelled = 1e5
+            if not isinstance(max_distance_travelled, (int, float)) or max_distance_travelled <= 0:
+                raise ValueError("The number of maximum distance a vaccine team can travel per day must be a positive number.")
+            self.max_distance_travelled = max_distance_travelled
+            if vaccine_delay is None:
+                vaccine_delay = 0
+            if not isinstance(vaccine_delay, int) or vaccine_delay < 0:
+                raise ValueError("The vaccine delay to effectiveness must be a positive integer or zero.")
+            self.vaccine_delay = vaccine_delay
+            if vaccine_birds is None:
+                vaccine_birds = 'all'
+            if (vaccine_birds != 'all') and (
+            not (vaccine_birds.startswith('only') and vaccine_birds.split('_')[1] in {"0", "1", "2"})) and (not (
+                    vaccine_birds.startswith('first') and vaccine_birds.split('_')[1] in {"0", "1", "2"} and
+                    vaccine_birds.split('_')[2] in {"0", "1", "2"} and vaccine_birds.split('_')[3] in {"0", "1", "2"})):
+                raise ValueError("Vaccine birds must be 'all', 'only_<species_number>', or "
+                                 "'first_<species_number>_<species_number>_<species_number>'.")
+            self.vaccine_birds = vaccine_birds
+            if vaccine_proportion is None:
+                vaccine_proportion = 1
+            if not isinstance(vaccine_proportion, (int, float)) or ((vaccine_proportion < 0) or (vaccine_proportion > 1)):
+                raise ValueError("The proportion of birds vaccinated per premises must be a positive number between zero and one.")
+            self.vaccine_proportion = vaccine_proportion
+            if vaccine_regions is None:
+                vaccine_regions = np.arange(11)
+            if isinstance(vaccine_regions, np.ndarray):
+                if (not np.issubdtype(vaccine_regions.dtype, np.integer)) or (not np.all((vaccine_regions >= 0) and (vaccine_regions <= 10))):
+                    raise ValueError("The vaccine_regions elements must be integers between 0 and 10.")
+            else:
+                raise ValueError("The vaccine_regions must be a numpy array of regions.")
+            self.vaccine_regions = vaccine_regions
+            if vaccine_silent_transmission is None:
+                vaccine_silent_transmission = 1
+            if not isinstance(vaccine_silent_transmission, (int, float)) or (vaccine_silent_transmission <= 0):
+                raise ValueError("The proportional change in time to notification must be a positive number.")
+            self.vaccine_silent_transmission = vaccine_silent_transmission
+
+
+
 class Plotting:
     def __init__(self, model_fitting=None, model_simulator=None):
-        '''Initialize plotting class with model fitting and/or simulation results.'''
+        """Initialize plotting class with model fitting and/or simulation results."""
         if model_fitting is not None:
             self.model_fitting = model_fitting
             self.model_structure = model_fitting.model_structure

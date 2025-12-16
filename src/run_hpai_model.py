@@ -9,7 +9,9 @@ np.random.seed(seed)
 # Choose options for running the model
 run_mcmc = False
 use_mcmc = True
-run_projections = True
+run_intervention = True
+run_projections = False
+use_projections = True
 sellke = True
 plots = True
 
@@ -33,11 +35,13 @@ print("Data loaded")
 
 # Set model parameters
 model = hpai_model.ModelStructure(data)
+
+# Set up model fitting
 modelfit = hpai_model.ModelFitting(model, total_iterations=211000, burn_in=11000, single_iterations=1000)
 
-# Run the model
+# Run the model for one chain
 if run_mcmc:
-    modelfit.run_mcmc_chain(save_iter=np.array([11000, 51000, 210000]))
+    modelfit.run_mcmc_chain(chain_number=1, save_iter=np.array([2000, 11000, 51000, 211000]))
 
 # Load MCMC chains
 if use_mcmc:
@@ -50,18 +54,30 @@ if run_mcmc or use_mcmc:
         modelplotting.plot_parameter_chains()
         modelplotting.plot_parameter_posteriors()
 
-# Get model projections
+# Set up model projections
 if run_mcmc or use_mcmc:
     modelsim = hpai_model.ModelSimulator(model_fitting=modelfit, reps=10, sellke=sellke)
 else:
     modelsim = hpai_model.ModelSimulator(model_structure=model, reps=10, sellke=sellke)
-if run_projections:
-    modelsim.run_model()
-else:
-    modelsim.load_projections()
 
-# Plot model projections
-if plots:
-    modelplotting_sim = hpai_model.Plotting(model_simulator=modelsim)
-    modelplotting_sim.plot_projections()
+# Run or load model projections
+if run_projections or use_projections:
+    if run_projections:
+        if run_intervention:
+            vaccine = hpai_model.Intervention()
+        else:
+            vaccine = None
+        modelsim.run_model(intervention=vaccine)
+    else:
+        if run_intervention:
+            vaccine = hpai_model.Intervention()
+        else:
+            vaccine = None
+        modelsim.load_projections(intervention=vaccine)
+    # Plot model projections
+    if plots:
+        modelplotting_sim = hpai_model.Plotting(model_simulator=modelsim)
+        modelplotting_sim.plot_projections()
+
+
 
