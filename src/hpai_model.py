@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 from scipy.spatial import cKDTree
+from sklearn.neighbors import KDTree
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.gridspec import GridSpec
@@ -716,11 +717,11 @@ class ModelStructure:
             self.chain_string += self.data.county_names[self.data.select_county].replace(" ", "_") + '_'
         # if simulation:
         #     if self.biosecurity:
-        #         self.chain_string += ('bio' + str(self.biosecurity_level) + '_' + str(self.biosecurity_duration) + '_' +
+        #         self.chain_string += ('bio' + str(self.biosecurity_level) + '_' + str(self.self.biosecurity_time) + '_' +
         #                               str(self.biosecurity_zone) + '_')
         #     if self.intervention is not None:
-        #         self.chain_string += 'v' + str(self.vaccine['doses']) + '_' + self.vaccine['strategy'] + '_teams' + str(
-        #             self.vaccine['teams']) + '_' + str(self.vaccine['max_team_distance']) + '_eff' + str(
+        #         self.chain_string += 'v' + str(self.intervention.max_vaccinations_per_day) + '_' + self.intervention.vaccine_strategy + '_teams' + str(
+        #             self.intervention.vaccine_teams) + '_' + str(self.vaccine['max_team_distance']) + '_eff' + str(
         #             int(100 * self.vaccine['efficacy_s'][0])) + '_' + str(
         #             int(100 * self.vaccine['efficacy_t'][0])) + '_'
         #         if self.vaccine['silent'] > 0:
@@ -1306,7 +1307,8 @@ class ModelSimulator:
         self.report_rep_projections = np.array([])
         self.report_time_projections = None
         self.non_fixed_transitions = None
-        
+        self.non_fixed_transitions_original = None
+
         # Initialise status of premises and time in current status
         self.premises_status = np.zeros((self.end_day + 1, self.model_structure.n_premises), dtype=int)
         self.premises_status_days = np.zeros(self.n_premises, dtype=int)
@@ -1320,6 +1322,17 @@ class ModelSimulator:
         self.max_transmission_grid = None
         self.u_ab = None
         self.max_rate_grid = None
+
+        # Initialise intervention
+        self.intervention = None
+        self.biosecurity_times = None
+        self.densities = None
+        self.to_vaccinate_today = None
+        self.vaccinated_birds = None
+        self.to_vaccinate_birds = None
+        self.vaccine_team_locations = None
+        self.vaccine_times = np.inf * np.ones(self.model_structure.data.n_premises, dtype=float)
+        self.denominator = None
         
         # Get the indices of the posterior samples to use for each replicate (and Sellke resistances)
         if self.sellke:
@@ -1335,15 +1348,40 @@ class ModelSimulator:
 
     def run_model(self, save_results=True, intervention=None):
         """Run the infection model simulation."""
+        self.intervention = intervention
+        if self.intervention is not None:
+            self.denominator = copy.deepcopy(self.model_structure.data.poultry_numbers)
+            self.denominator[self.denominator == 0] = 1
+
+            if "vaccine" in self.intervention.intervention_type.split('_'):
+
+                # Get relevant vaccine attributes if required
+                if self.intervention.vaccine_strategy == 'farm_density':
+                    kde = stats.gaussian_kde(self.model_structure.data.location, bw_method='scott')
+                    self.densities = kde(self.model_structure.data.location)
+                elif self.intervention.vaccine_strategy == 'bird_density':
+                    kde = stats.gaussian_kde(self.model_structure.data.location, bw_method='scott',
+                                             weights=np.sum(self.model_structure.data.poultry_numbers, axis=0))
+                    self.densities = kde(self.model_structure.data.location)
+                elif self.intervention.vaccine_strategy == 'case_density':
+                    xy_cases = np.zeros(self.model_structure.data.location.shape[1], dtype=int)
+                    xy_cases[self.model_structure.data.infected_premises] = 1
+                    kde = stats.gaussian_kde(self.model_structure.data.location, bw_method='scott',
+                                             weights=xy_cases)
+                    self.densities = kde(self.model_structure.data.location)
+
         # Run realisation for each replicate
         for rep in range(self.reps):
             print(f"Simulation {rep + 1} of {self.reps}")
+            if self.sellke:
+                np.random.seed(0)
 
             # Set notification time by fitting gamma distribution to posterior samples
             fit_a, _, fit_b = stats.gamma.fit(self.transition_posterior[self.post_idx[rep], :self.n_cases], floc=0)
             self.non_fixed_transitions = np.random.gamma(fit_a, fit_b, self.n_premises)
             self.non_fixed_transitions[self.premises_posterior[self.post_idx[rep], :self.n_cases].astype(int)] = (
                 self.transition_posterior)[self.post_idx[rep], :self.n_cases]
+            self.non_fixed_transitions_original = copy.deepcopy(self.non_fixed_transitions)
 
             # Update model parameters to those from the posterior sample
             i = 0
@@ -1353,6 +1391,32 @@ class ModelSimulator:
 
             # Initial conditions
             self.get_initial_conditions(rep)
+
+            # Initialise intervention variables
+            if self.intervention is not None:
+                if "biosecurity" in self.intervention.intervention_type.split('_'):
+
+                    # Get time since biosecurity measures were implemented
+                    self.biosecurity_times = np.inf * np.ones(self.model_structure.data.n_premises)
+                    if (self.intervention.biosecurity_start_day <= 0):
+                        self.biosecurity_times[self.premises_status[0] == self.model_structure.data_compartments_idx + 1] = (
+                            self.premises_status_days)[self.premises_status[0] == self.model_structure.data_compartments_idx + 1]
+                if "vaccine" in self.intervention.intervention_type.split('_'):
+
+                    # Currently vaccinated birds is zero
+                    self.vaccinated_birds = np.zeros(
+                        (self.model_structure.n_species, self.model_structure.data.n_premises),
+                        dtype=int)
+
+                    # Determine number of birds to vaccinate
+                    if self.intervention.vaccine_birds.split('_')[0] == 'only':
+                        self.to_vaccinate_birds = np.round(self.model_structure.data.poultry_numbers[int(
+                            self.intervention.vaccine_birds.split('_')[
+                                1]), :] * self.intervention.vaccine_proportion).astype(int)
+                    else:
+                        self.to_vaccinate_birds = np.sum(
+                            np.round(self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion),
+                            axis=0).astype(int)
 
             # Pre-calculate transmissibility, susceptibility and grid attributes
             self.transmissibility = np.sum(self.model_structure.parameters.xi.values[:, np.newaxis] * (
@@ -1397,7 +1461,55 @@ class ModelSimulator:
         season_time = self.model_structure.get_season_times(day)
         # Determine susceptibility and transmissibility adjustment to interventions
         if self.intervention is not None:
-            raise NotImplementedError("Vaccination not yet implemented in ModelSimulator.")
+            if 'vaccine' in self.intervention.intervention_type.split('_'):
+                if day == self.intervention.vaccine_start_day:
+                    self.vaccine_team_locations = self.vaccine_start(day)
+                    self.vaccine_times[self.vaccine_team_locations] = day
+                if (day >= self.intervention.vaccine_start_day) and (day < self.intervention.vaccine_end_day):
+                    self.vaccinate_premises(day, rep)
+                    prop_vac = self.vaccinated_birds / self.denominator
+            if 'biosecurity' in self.intervention.intervention_type.split('_'):
+                if (day >= self.intervention.biosecurity_start_day) and (
+                        day < self.intervention.biosecurity_end_day):
+                    if day > 0:
+                        new_biosecurity = \
+                        np.where((self.premises_status[day, :] == self.model_structure.data_compartments_idx + 1)
+                                 & (self.premises_status[
+                                        day - 1, :] == self.model_structure.data_compartments_idx))[0]
+                        if len(new_biosecurity) > 0:
+                            self.add_biosecurity(new_biosecurity)
+                    biosecurity_s = ((self.biosecurity_times < self.intervention.biosecurity_time) *
+                                     np.array(self.intervention.biosecurity_efficacy_s)[:, np.newaxis] + (
+                                                 self.biosecurity_times >= self.intervention.biosecurity_time))
+                    biosecurity_t = ((self.biosecurity_times < self.intervention.biosecurity_time) *
+                                     np.array(self.intervention.biosecurity_efficacy_t)[:, np.newaxis] + (
+                                                 self.biosecurity_times >= self.intervention.biosecurity_time))
+                    self.biosecurity_times[~np.isinf(self.biosecurity_times)] += 1
+
+            if 'vaccine' in self.intervention.intervention_type.split('_') and 'biosecurity' in self.intervention.intervention_type.split('_'):
+                total_efficacy_s = biosecurity_s * np.array(self.intervention.vaccine_efficacy_s)[:, np.newaxis]
+                total_efficacy_t = biosecurity_t * np.array(self.intervention.vaccine_efficacy_s)[:, np.newaxis]
+            elif 'vaccine' in self.intervention.intervention_type.split('_'):
+                total_efficacy_s = np.array(self.intervention.vaccine_efficacy_s)[:, np.newaxis]
+                total_efficacy_t = np.array(self.intervention.vaccine_efficacy_s)[:, np.newaxis]
+            elif 'biosecurity' in self.intervention.intervention_type.split('_'):
+                total_efficacy_s = biosecurity_s
+                total_efficacy_t = biosecurity_t
+            else:
+                total_efficacy_s = np.ones(self.model_structure.n_species)[:, np.newaxis]
+                total_efficacy_t = np.ones(self.model_structure.n_species)[:, np.newaxis]
+
+            new_sus_breakdown = ((total_efficacy_s * prop_vac + (
+                    1 - prop_vac)) * self.model_structure.parameters.zeta.values[:, np.newaxis] *
+                                 (self.model_structure.data.pop_over_mean **
+                                  self.model_structure.parameters.phi.values[:, np.newaxis]))
+            new_susceptibility = np.sum(new_sus_breakdown, axis=0)
+            new_transmissibility = self.model_structure.parameters.gamma.values[0] * np.sum(
+                (total_efficacy_t * prop_vac + (1 - prop_vac)) *
+                self.model_structure.parameters.xi.values[:, np.newaxis] * (
+                        self.model_structure.data.pop_over_mean ** self.model_structure.parameters.phi.values[
+                    :, np.newaxis]), axis=0)
+            del prop_vac
         else:
             new_transmissibility = self.transmissibility
             new_susceptibility = self.susceptibility
@@ -1561,72 +1673,455 @@ class ModelSimulator:
         else:
             raise ValueError("Only initial_condition_type 0 (initial infected from posterior) is currently implemented.")
 
-    def save_projections(self, directory='../outputs/', intervention=None):
+    def vaccine_start(self, day):
+        """Initialize vaccination locations."""
+        if self.intervention.vaccine_strategy == 'random':
+            teams = np.random.choice(np.arange(self.model_structure.data.n_farms), self.intervention.vaccine_teams, replace=False)
+        elif self.intervention.vaccine_strategy == 'bird_numbers':
+            teams = np.argpartition(np.sum(self.model_structure.data.poultry_numbers, axis=0), -self.intervention.vaccine_teams)[
+                -self.intervention.vaccine_teams:]
+        elif ((self.intervention.vaccine_strategy == 'farm_density') or (self.intervention.vaccine_strategy == 'bird_density')) or (
+                self.intervention.vaccine_strategy == 'case_density'):
+            teams = np.argpartition(self.densities, -self.intervention.vaccine_teams)[-self.intervention.vaccine_teams:]
+        elif self.intervention.vaccine_strategy.startswith('ring'):
+
+            # Get eligible infected premises for centre of vaccination rings
+            eligible = np.where(self.premises_status[day, :] >= self.model_structure.data_compartments_idx)[0]
+            eligible_original = copy.deepcopy(eligible)
+            if not isinstance(eligible, np.ndarray):
+                eligible = np.array([eligible])
+            if len(eligible) > 0:
+
+                # Get time since notification for eligible premises
+                time_notif = self.premises_status_days[eligible] + (self.premises_status[day, eligible] > self.model_structure.data_compartments_idx) * self.model_structure.transitions[-1]
+
+                # Select premises with the shortest time since notification for each team
+                if self.intervention.vaccine_teams <= len(eligible):
+                    eligible = eligible[np.argpartition(time_notif, self.intervention.vaccine_teams-1)][:self.intervention.vaccine_teams]
+                else:
+                    eligible = np.tile(eligible[np.argsort(time_notif)], np.ceil(self.intervention.vaccine_teams/len(eligible)).astype(int))[:self.intervention.vaccine_teams]
+
+                # Set current vaccination ring to fill and list of fully vaccinated rings
+                self.vac_to_fill = eligible
+                self.vac_full_ring = np.array([], dtype=int)
+                if not isinstance(eligible, np.ndarray):
+                    eligible = np.array([eligible])
+
+                # Get premises within distance from eligible infected premises rings
+                distance = np.sum((self.model_structure.data.location[:, eligible, np.newaxis] - self.model_structure.data.location[:, np.newaxis, :]) ** 2, axis=0)
+                eligible_distance = [np.flatnonzero(row) for row in distance < float(self.intervention.vaccine_strategy.split('_')[2]) ** 2]
+
+                # Get where vaccine teams start
+                teams = np.full(self.intervention.vaccine_teams, -1, dtype=int)
+                for i, row in enumerate(eligible_distance):
+                    eligible_distance[i] = row[~np.isin(row, eligible_original) & ~np.isin(row, teams)]
+                    if len(eligible_distance[i]) > 0:
+                        if self.intervention.vaccine_strategy.split('_')[1] == 'random':
+                            teams[i] = np.random.choice(eligible_distance[i], 1, replace=False)[0]
+                        elif self.intervention.vaccine_strategy.split('_')[1] == 'in':
+                            teams[i] = eligible_distance[i][np.argmin(np.min(distance[:, eligible_distance[i]], axis=0))]
+                        elif self.intervention.vaccine_strategy.split('_')[1] == 'out':
+                            d_eligible_distance = distance[:, eligible_distance[i]]
+                            teams[i] = eligible_distance[i][np.argmax(np.where(d_eligible_distance < float(self.intervention.vaccine_strategy.split('_')[3]) ** 2, d_eligible_distance, -np.inf))]
+                        else:
+                            raise ValueError("Strategy must be random, in, or out.")
+                    else:
+                        all_eligible = np.arange(self.model_structure.n_premises)[~np.isin(np.arange(self.model_structure.n_premises), np.append(eligible_original, teams))]
+                        teams[i] = all_eligible[np.argmin(np.sum((self.model_structure.data.location[:, eligible[i], np.newaxis] - self.model_structure.data.location[:, all_eligible]) ** 2, axis=0), axis=0)]
+            else:
+
+                # If no eligible infected premises, select random premises for vaccination teams
+                teams = np.random.choice(np.arange(self.model_structure.data.n_premises), self.intervention.vaccine_teams, replace=False)
+                self.vac_to_fill = None
+                self.vac_full_ring = np.array([], dtype=int)
+        else:
+            raise ValueError(f"Vaccine strategy {self.intervention.vaccine_strategy} not recognised.")
+        return teams
+
+    def vaccinate_premises(self, day, rep):
+        """Determine which premises are vaccinated on a given day."""
+
+        # Get number of birds to vaccinate today for each team
+        self.to_vaccinate_today = np.floor(
+            (self.intervention.max_vaccinations_per_day / self.intervention.vaccine_teams)) * np.ones(
+            self.intervention.vaccine_teams)
+        self.to_vaccinate_today[:(self.intervention.max_vaccinations_per_day - np.sum(self.to_vaccinate_today)).astype(int)] += 1
+
+        # Check the remaining birds to vaccinate is greater than the
+        if np.sum(self.to_vaccinate_birds - np.sum(self.vaccinated_birds, axis=0)) > 0:
+            for i in range(self.intervention.vaccine_teams):
+
+                # Move vaccination teams and get locations to vaccinate
+                locations = self.move_teams(day, i)
+
+                # Store final location of each team and the day of vaccination for all locations
+                self.vaccine_team_locations[i] = locations[-1]
+                self.vaccine_times[locations[1:]] = day
+
+                # Vaccinate premises
+                self.do_vaccination(locations, self.to_vaccinate_today[i])
+
+        # Update silent transmission transitions if required
+        if self.intervention.vaccine_silent_transmission != 1:
+            self.non_fixed_transitions = np.where(np.sum(self.vaccinated_birds, axis=0) > 0, self.intervention.vaccine_silent_transmission, 1) * self.non_fixed_transitions_original
+
+    def add_biosecurity(self, premises_centres):
+        """Determine which premises have biosecurity applied on a given day."""
+        if isinstance(self.intervention.biosecurity_zone, (int, float)):
+
+            # Get a ring around centres with a given radius
+            premises_in_ring = np.hstack([self.model_structure.data.location_tree.query_ball_point(
+                (self.model_structure.data.location[0, f], self.model_structure.data.location[1, f]),
+                self.intervention.biosecurity_zone) for f in premises_centres])
+        elif self.intervention.biosecurity_zone == 'region':
+
+            # Get all premises in the same region as centres
+            premises_in_ring = \
+            np.where(np.isin(self.model_structure.data.region, self.model_structure.data.region[premises_centres]))[0]
+        elif self.intervention.biosecurity_zone == 'county':
+
+            # Get all premises in the same county as centres
+            premises_in_ring = np.where(np.isin(self.model_structure.data.county, self.model_structure.data.county[premises_centres]))[0]
+        else:
+
+            # Error if biosecurity zone not recognised
+            raise ValueError("biosecurity_zone must be 'region', 'county' or a number.")
+
+        # Update biosecurity times for premises in ring
+        self.biosecurity_times[premises_in_ring] = 0
+
+    def move_teams(self, day, team_idx):
+        """Move vaccination teams and return locations visited."""
+        # Get current location to vaccinate
+        locations = np.array([self.vaccine_team_locations[team_idx]])
+
+        # Do not vaccinate more birds on notified premises
+        self.to_vaccinate_birds[(self.premises_status[day, :] >= self.model_structure.data_compartments_idx) & np.isinf(self.vaccine_times)] = (
+            np.sum(
+                self.vaccinated_birds[:, (self.premises_status[day, :] >= self.model_structure.data_compartments_idx) & np.isinf(self.vaccine_times)],
+                axis=0))
+
+        # Set that more vaccination to occur
+        self.not_capacity = False
+
+        # Check whether there are sufficient birds left to vaccinate at current location otherwise do not move to new locations
+        if self.to_vaccinate_birds[self.vaccine_team_locations[team_idx]] - np.sum(self.vaccinated_birds[:, self.vaccine_team_locations[team_idx]]) < self.to_vaccinate_today[team_idx]:
+
+            # If the remaining birds to vaccinate is less than the capacity, set to vaccinate all remaining birds
+            if np.sum(self.to_vaccinate_birds - np.sum(self.vaccinated_birds, axis=0)) < self.to_vaccinate_today[team_idx]:
+                self.not_capacity = True
+                self.to_vaccinate_today[team_idx] = np.sum(self.to_vaccinate_birds - np.sum(self.vaccinated_birds, axis=0))
+                locations = np.where(self.to_vaccinate_birds - np.sum(self.vaccinated_birds, axis=0) > 0)[0]
+                return locations
+            elif np.sum(self.to_vaccinate_birds - np.sum(self.vaccinated_birds, axis=0)) == 0:
+                self.not_capacity = True
+                return locations
+
+            # If distance travelled is unlimited (>=1e5), vaccinate at any premises with remaining birds
+            if self.intervention.max_distance_travelled >= 1e5:
+                eligible_distances = (self.vaccine_times == np.inf) & (self.premises_status[day, :] < self.model_structure.data_compartments_idx)
+            else:
+                eligible_distances = ((np.sum((self.model_structure.data.locations - self.model_structure.data.locations[self.vaccine_team_locations[team_idx]]) ** 2, axis=1) <
+                                       self.intervention.max_distance_travelled  ** 2) & (self.vaccine_times == np.inf) & (
+                                                  self.premises_status[day, :] < self.model_structure.data_compartments_idx))
+
+            # If no eligible premises within distance, select closest eligible premises
+            if not np.any(eligible_distances):
+                tmp = (self.vaccine_times == np.inf) & (self.premises_status[day, :] < self.model_structure.data_compartments_idx)
+                tmp_dist = np.sum((self.model_structure.data.locations - self.model_structure.data.locations[self.vaccine_team_locations[team_idx]]) ** 2, axis=1)
+                tmp_dist[~tmp] = np.inf
+                eligible_distances[np.argmin(tmp_dist)] = True
+
+            # Execute vaccination strategy
+            if self.intervention.vaccine_strategy == 'random':
+                rand_idx = np.random.permutation(np.flatnonzero(eligible_distances).size)
+                bird_idx = np.flatnonzero(eligible_distances)[rand_idx]
+            elif self.intervention.vaccine_strategy == 'bird_numbers':
+                bird_idx = np.flatnonzero(eligible_distances)[
+                    np.argsort(-np.sum(self.model_structure.data.poultry_numbers[:, eligible_distances], axis=0))]
+            elif ((self.intervention.vaccine_strategy == 'farm_density') or (self.intervention.vaccine_strategy == 'bird_density')) or (
+                    self.intervention.vaccine_strategy == 'case_density'):
+                bird_idx = np.flatnonzero(eligible_distances)[np.argsort(-self.densities[eligible_distances])]
+            elif self.intervention.vaccine_strategy.split('_')[0] == 'ring':
+
+                # If no assigned ring to fill or current ring is full, select new ring to fill if IPs available
+                if (self.vac_to_fill is None) or (np.isin(self.vac_to_fill[team_idx], self.vac_full_ring)):
+                    if len(np.where(self.premises_status[day, :] >= self.model_structure.data_compartments_idx)[0]) > 0:
+                        eligible = np.setdiff1d(np.where(self.premises_status[day, :] >= self.model_structure.data_compartments_idx)[0],
+                                                self.vac_full_ring)
+                        if not isinstance(eligible, np.ndarray):
+                            eligible = np.array([eligible])
+                        if len(eligible) > 0:
+                            time_notif = self.premises_status_days[eligible] + (
+                                    self.premises_status[day, eligible] > self.model_structure.data_compartments_idx) * self.model_structure.transitions[-1]
+                            eligible = np.array(
+                                [np.random.choice(eligible[np.where(time_notif == np.min(time_notif))[0]])])
+                            if not isinstance(eligible, np.ndarray):
+                                eligible = np.array([eligible])
+                    else:
+                        eligible = np.array([])
+                else:
+                    eligible = np.array([self.vac_to_fill[team_idx]])
+
+                # If ring centre (eligible) available, get premises within distance from eligible infected premises rings
+                if len(eligible) > 0:
+                    centre = self.model_structure.data.location[:, eligible].T
+                    possible = self.model_structure.data.location[:, eligible_distances].T
+
+                    # Make tree and get premises eligible for vaccination in ring around centre with distance
+                    tree = cKDTree(possible)
+                    indices = tree.query_ball_point(centre, r=float(self.intervention.vaccine_strategy.split('_')[2]))
+                    dists = [np.linalg.norm(possible[i] - origin, axis=1) if i else np.array([]) for i, origin in zip(indices, centre)]
+                    if len(dists[0]) > 0:
+
+                        # Sort indices by distance from centre and choose order by strategy
+                        sorted_order = np.argsort(dists[0])
+                        sorted_flat_indices = np.array(indices[0])[sorted_order]
+                        _, first_occ = np.unique(sorted_flat_indices, return_index=True)
+                        unique_sorted_flat_indices = sorted_flat_indices[np.sort(first_occ)]
+                        if self.intervention.vaccine_strategy.split('_')[1] == 'random':
+                            rand_idx = np.random.permutation(unique_sorted_flat_indices)
+                            bird_idx = np.flatnonzero(eligible_distances)[rand_idx]
+                        elif self.intervention.vaccine_strategy.split('_')[1] == 'in':
+                            bird_idx = np.flatnonzero(eligible_distances)[unique_sorted_flat_indices]
+                        elif self.intervention.vaccine_strategy.split('_')[1] == 'out':
+                            bird_idx = np.flatnonzero(eligible_distances)[unique_sorted_flat_indices][::-1]
+                        else:
+                            raise ValueError("Strategy must be random, in, or out.")
+                    else:
+
+                        # If no eligible centre, choose a new centre and add to fully vaccinated rings list
+                        while (len(dists[0]) == 0) and (len(eligible) > 0):
+                            self.vac_full_ring = np.append(self.vac_full_ring, eligible)
+                            eligible = np.setdiff1d(np.where(self.premises_status[day, :] >= self.model_structure.data_compartments_idx)[0],
+                                                    self.vac_full_ring)
+                            if len(eligible) > 0:
+                                eligible = np.array([np.sort(eligible)[0]])
+                            if len(eligible) > 0:
+                                self.vac_to_fill[team_idx] = eligible[0]
+                                centre = self.model_structure.data.location[:, eligible].T
+                                possible = self.model_structure.data.location[:, eligible_distances].T
+
+                                # Make tree and get premises eligible for vaccination in ring around centre with distance
+                                tree = cKDTree(possible)
+                                indices = tree.query_ball_point(centre, r=float(
+                                    self.intervention.vaccine_strategy.split('_')[2]))
+                                dists = [np.linalg.norm(possible[i] - origin, axis=1) if i else np.array([]) for
+                                         i, origin in zip(indices, centre)]
+
+                                # Sort indices by distance from centre and choose order by strategy
+                                if len(dists[0]) > 0:
+                                    sorted_order = np.argsort(dists[0])
+                                    sorted_flat_indices = np.array(indices[0])[sorted_order]
+                                    _, first_occ = np.unique(sorted_flat_indices, return_index=True)
+                                    unique_sorted_flat_indices = sorted_flat_indices[np.sort(first_occ)]
+                                    if self.intervention.vaccine_strategy.split('_')[1] == 'random':
+                                        rand_idx = np.random.permutation(unique_sorted_flat_indices)
+                                        bird_idx = np.flatnonzero(eligible_distances)[rand_idx]
+                                    elif self.intervention.vaccine_strategy.split('_')[1] == 'in':
+                                        bird_idx = np.flatnonzero(eligible_distances)[unique_sorted_flat_indices]
+                                    elif self.intervention.vaccine_strategy.split('_')[1] == 'out':
+                                        bird_idx = np.flatnonzero(eligible_distances)[unique_sorted_flat_indices][
+                                            ::-1]
+                                    else:
+                                        raise ValueError("Strategy must be random, in, or out.")
+                            else:
+                                bird_idx = np.array([])
+                else:
+                    bird_idx = np.array([])
+
+            # Add to locations to vaccinate
+            if len(bird_idx) > 0:
+                bird_idx = np.append(locations, bird_idx)
+                cumsum_idx = np.cumsum(
+                    self.to_vaccinate_birds[bird_idx] - np.sum(self.vaccinated_birds[:, bird_idx], axis=0))
+                stop_index = np.searchsorted(cumsum_idx, self.to_vaccinate_today[team_idx], side='right')
+                locations = bird_idx[:(stop_index + 1)]
+
+            # Get additional rings if required
+            if (np.sum(self.to_vaccinate_birds[locations]) - np.sum(self.vaccinated_birds[:, locations]) <
+                self.to_vaccinate_today[team_idx]) and (len(eligible) > 0):
+                while ((np.sum(self.to_vaccinate_birds[locations]) - np.sum(self.vaccinated_birds[:, locations]) <
+                        self.to_vaccinate_today[team_idx]) and (len(eligible) > 0)):
+                    self.vac_full_ring = np.append(self.vac_full_ring, eligible[0])
+                    eligible = np.setdiff1d(np.where(self.premises_status[day, :] >= self.model_structure.data_compartments_idx)[0],
+                                            self.vac_full_ring)
+                    if len(eligible) > 0:
+                        time_notif = self.premises_status_days[eligible] + (
+                                self.premises_status[day, eligible] > self.model_structure.data_compartments_idx) * self.model_structure.transitions[-1]
+                        eligible = np.array(
+                            [np.random.choice(eligible[np.where(time_notif == np.min(time_notif))[0]])])
+                        self.vac_to_fill[team_idx] = eligible[0]
+                        eligible_distances[locations] = False
+                        centre = self.model_structure.data.location[:, eligible].T
+                        possible = self.model_structure.data.location[:, eligible_distances].T
+                        tree = cKDTree(possible)
+                        indices = tree.query_ball_point(centre, r=float(
+                            self.intervention.vaccine_strategy.split('_')[2]))
+                        dists = [np.linalg.norm(possible[i] - origin, axis=1) if i else np.array([]) for
+                                 i, origin in zip(indices, centre)]
+                        if len(dists[0]) > 0:
+                            sorted_order = np.argsort(dists[0])
+                            sorted_flat_indices = np.array(indices[0])[sorted_order]
+                            _, first_occ = np.unique(sorted_flat_indices, return_index=True)
+                            unique_sorted_flat_indices = sorted_flat_indices[np.sort(first_occ)]
+                            if self.intervention.vaccine_strategy.split('_')[1] == 'random':
+                                rand_idx = np.random.permutation(unique_sorted_flat_indices)
+                                bird_idx = np.flatnonzero(eligible_distances)[rand_idx]
+                            elif self.intervention.vaccine_strategy.split('_')[1] == 'in':
+                                bird_idx = np.flatnonzero(eligible_distances)[unique_sorted_flat_indices]
+                            elif self.intervention.vaccine_strategy.split('_')[1] == 'out':
+                                bird_idx = np.flatnonzero(eligible_distances)[unique_sorted_flat_indices][::-1]
+                            else:
+                                raise ValueError("Strategy must be random, in, or out.")
+                        else:
+                            bird_idx = np.array([], dtype=int)
+                        bird_idx = np.append(locations, bird_idx)
+                        cumsum_idx = np.cumsum(
+                            self.to_vaccinate_birds[bird_idx] - np.sum(self.vaccinated_birds[:, bird_idx], axis=0))
+                        stop_index = np.searchsorted(cumsum_idx, self.to_vaccinate_today[team_idx], side='right')
+                        locations = bird_idx[:stop_index + 1]
+                    else:
+                        self.not_capacity = True
+            if (np.sum(self.to_vaccinate_birds[locations]) - np.sum(self.vaccinated_birds[:, locations]) <
+                    self.to_vaccinate_today[team_idx]):
+                self.not_capacity = True
+
+        return locations
+
+    def do_vaccination(self, locations, n_vaccinate):
+        """Perform vaccination at given locations."""
+        if self.intervention.vaccine_birds.startswith('only'):
+
+            # Get number of birds to vaccinate at each location
+            if self.not_capacity:
+                vaccinated = (self.to_vaccinate_birds[locations] - np.sum(self.vaccinated_birds[:, locations], axis=0)).astype(int)
+            else:
+                vaccinated = np.append(
+                    self.to_vaccinate_birds[locations[:-1]] - np.sum(self.vaccinated_birds[:, locations[:-1]], axis=0),
+                    n_vaccinate - np.sum(self.to_vaccinate_birds[locations[:-1]] - np.sum(self.vaccinated_birds[:, locations[:-1]], axis=0))).astype(int)
+
+            # Update vaccinated birds
+            self.vaccinated_birds[int(self.intervention.vaccine_birds.split('_')[1]), locations] += vaccinated
+        elif self.intervention.vaccine_birds.startswith('first'):
+
+            # Get number of birds to vaccinate at each location
+            if self.not_capacity:
+                vaccinated_all = np.round(self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion).astype(int)[:, locations]
+            else:
+                vaccinated_all = np.hstack((np.round(self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion)[:, locations[:-1]], np.zeros((3,1)))).astype(int)
+                if vaccinated_all.shape[1] > 1:
+                    vaccinated_all[:, 0] -= self.vaccinated_birds[:, locations[0]]
+                final_loc = np.round(self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion)[:, locations[-1]] - self.vaccinated_birds[:, locations[-1]]
+
+                # Vaccinate in order of species specified
+                vaccinated_all[int(self.intervention.vaccine_birds.split('_')[1]), -1] = np.minimum(n_vaccinate - np.sum(vaccinated_all), final_loc[int(self.intervention.vaccine_birds.split('_')[1])])
+                vaccinated_all[int(self.intervention.vaccine_birds.split('_')[2]), -1] = np.minimum(n_vaccinate - np.sum(vaccinated_all), final_loc[int(self.intervention.vaccine_birds.split('_')[2])])
+                vaccinated_all[int(self.intervention.vaccine_birds.split('_')[3]), -1] = np.minimum(n_vaccinate - np.sum(vaccinated_all), final_loc[int(self.intervention.vaccine_birds.split('_')[3])])
+
+            # Update vaccinated birds
+            self.vaccinated_birds[:, locations] += vaccinated_all
+        else:
+
+            # Get number of birds to vaccinate at each location
+            if self.not_capacity:
+                vaccinated_all = (np.round(self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion)[:, locations]).astype(int)
+                vaccinated_all[:, 0] -= self.vaccinated_birds[:, locations[0]]
+            else:
+                vaccinated_all = np.hstack((np.round(self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion)[:, locations[:-1]], np.zeros((3, 1)))).astype(int)
+                if vaccinated_all.shape[1] > 1:
+                    vaccinated_all[:, 0] -= self.vaccinated_birds[:, locations[0]]
+                if self.to_vaccinate_birds[locations[-1]] > 0:
+                    vac_final_loc = np.floor(((np.sum(self.vaccinated_birds[:, locations[-1]]) + n_vaccinate - np.sum(vaccinated_all))/
+                                              self.to_vaccinate_birds[locations[-1]]) * (self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion)[:, locations[-1]]).astype(int) - self.vaccinated_birds[:, locations[-1]]
+                else:
+                    vac_final_loc = np.array([0,0,0]).astype(int)
+
+                # Vaccinate birds species proportionally
+                tmp = 0
+                tmp_poss = np.where((self.model_structure.data.poultry_numbers * self.intervention.vaccine_proportion)[:, locations[-1]] - self.vaccinated_birds[:, locations[-1]] > 0)[0]
+                while (np.sum(vac_final_loc) < n_vaccinate - np.sum(vaccinated_all)) and (tmp < len(tmp_poss)):
+                    vac_final_loc[tmp_poss[tmp]] += 1
+                    tmp += 1
+                vaccinated_all[:, -1] = vac_final_loc
+
+            # Update vaccinated birds
+            self.vaccinated_birds[:, locations] += vaccinated_all
+
+    def save_projections(self, directory='../outputs/'):
         """Save the projections to files."""
         if self.sellke:
             sellke_string = '_sellke'
         else:
             sellke_string = ''
+        intervention_string = ''
+        if self.intervention is not None:
+            if self.intervention.intervention_type in {'biosecurity', 'biosecurity_vaccine', 'vaccine_biosecurity'}:
+                intervention_string += f'_biosecurity_effs{self.intervention.biosecurity_efficacy_s}_zone{self.intervention.biosecurity_zone}_time{self.intervention.biosecurity_time}'
+            if self.intervention.intervention_type in {'vaccine', 'biosecurity_vaccine', 'vaccine_biosecurity'}:
+                intervention_string += f'_vaccine_{self.intervention.vaccine_strategy}_effs{self.intervention.vaccine_efficacy_s}_efft{self.intervention.vaccine_efficacy_t}_silent{self.intervention.vaccine_silent_transmission}'
         rep_string = f'_reps{self.reps}'
-        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy', self.report_day_projections)
-        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy', self.report_premises_projections)
-        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy', self.report_rep_projections.astype(int))
-        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy', self.report_time_projections)
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_day.npy', self.report_day_projections)
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_premises.npy', self.report_premises_projections)
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_rep.npy', self.report_rep_projections.astype(int))
+        np.save(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_time.npy', self.report_time_projections)
 
     def load_projections(self, directory='../outputs/', intervention=None):
         """Load projections."""
+        if intervention is not None:
+            self.intervention = intervention
         if self.sellke:
             sellke_string = '_sellke'
         else:
             sellke_string = ''
+        intervention_string = ''
+        if self.intervention is not None:
+            if self.intervention.intervention_type in {'biosecurity', 'biosecurity_vaccine', 'vaccine_biosecurity'}:
+                intervention_string += f'_biosecurity_effs{self.intervention.biosecurity_efficacy_s}_zone{self.intervention.biosecurity_zone}_time{self.intervention.biosecurity_time}'
+            if self.intervention.intervention_type in {'vaccine', 'biosecurity_vaccine', 'vaccine_biosecurity'}:
+                intervention_string += f'_vaccine_{self.intervention.vaccine_strategy}_effs{self.intervention.vaccine_efficacy_s}_efft{self.intervention.vaccine_efficacy_t}_silent{self.intervention.vaccine_silent_transmission}'
         rep_string = f'_reps{self.reps}'
-        self.report_day_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_day.npy')
-        self.report_premises_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_premises.npy')
-        self.report_rep_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_rep.npy')
-        self.report_time_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{rep_string}_report_time.npy')
+        self.report_day_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_day.npy')
+        self.report_premises_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_premises.npy')
+        self.report_rep_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_rep.npy')
+        self.report_time_projections = np.load(f'{directory}simulation_{self.model_structure.chain_string}{sellke_string}{intervention_string}{rep_string}_report_time.npy')
 
 class Intervention:
     """Placeholder for intervention class for vaccination and biosecurity."""
-    def __init__(self, intervention_type=None, intervention_start=None, intervention_end=None,
-                 efficacy_s=None, efficacy_t=None, biosecurity_zone=None, biosecurity_time=None,
+    def __init__(self, intervention_type=None, biosecurity_start_day=None, biosecurity_end_day=None,
+                 biosecurity_efficacy_s=None, biosecurity_efficacy_t=None, biosecurity_zone=None, biosecurity_time=None,
+                 vaccine_start_day=None, vaccine_end_day=None, vaccine_efficacy_s=None, vaccine_efficacy_t=None,
                  vaccine_strategy=None, vaccine_teams=None, max_vaccinations_per_day=None, max_distance_travelled=None,
                  vaccine_delay=None, vaccine_birds=None, vaccine_proportion=None, vaccine_regions=None,
                  vaccine_silent_transmission=None):
         """Initialize intervention class with specified parameters."""
         # Intervention type is biosecurity, vaccine, or None
-        allowed_interventions = {"biosecurity", "vaccine", None}
+        allowed_interventions = {"biosecurity", "vaccine", "biosecurity_vaccine", "vaccine_biosecurity", None}
         if intervention_type not in allowed_interventions:
             raise ValueError(
                 f"Intervention has invalid type: {intervention_type}. "
                 f"Allowed types are {sorted(allowed_interventions)}."
             )
+        if intervention_type is None:
+            intervention_type = "vaccine"
         self.intervention_type = intervention_type
 
-        # Intervention start and end days are integers
-        if intervention_start is None:
-            intervention_start = 0
-        if not isinstance(intervention_start, int):
-            raise ValueError("Intervention start day must be an integer.")
-        self.intervention_start = intervention_start
-        if intervention_end is None:
-            intervention_end = np.inf
-        if not isinstance(intervention_end, int) and intervention_end != np.inf:
-            raise ValueError("Intervention end day must be an integer or inf.")
-        self.intervention_end = intervention_end
-
-        # Efficacy parameters for susceptibility and transmissibility for each species type
-        if efficacy_s is None:
-            efficacy_s = [0.1, 0.1, 0.1]
-        self.efficacy_s = efficacy_s
-        if efficacy_t is None:
-            if self.intervention_type == "vaccine":
-                efficacy_t = [0.1, 0.1, 0.1]
-            else:
-                efficacy_t = [1, 1, 1]
-        self.efficacy_t = efficacy_t
-
         # Biosecurity parameters for size of zone and time of effect
-        if intervention_type == "biosecurity":
+        if "biosecurity" in intervention_type.split('_'):
+
+            # Intervention start and end days are integers
+            if biosecurity_start_day is None:
+                biosecurity_start_day = 0
+            if not isinstance(biosecurity_start_day, int):
+                raise ValueError("start_day start day must be an integer.")
+            self.biosecurity_start_day = biosecurity_start_day
+            if biosecurity_end_day is None:
+                biosecurity_end_day = np.inf
+            if not isinstance(biosecurity_end_day, int) and biosecurity_end_day != np.inf:
+                raise ValueError("Intervention end day must be an integer or inf.")
+            self.biosecurity_end_day = biosecurity_end_day
+
+            # Biosecurity zone size and time of effect
             if biosecurity_zone is None:
                 biosecurity_zone = 10.0
             if not (isinstance(biosecurity_zone, (int, float)) and biosecurity_zone > 0) and biosecurity_zone not in {"county", "region", "GB"}:
@@ -1638,18 +2133,46 @@ class Intervention:
                 raise ValueError("Biosecurity time must be a positive integer.")
             self.biosecurity_time = biosecurity_time
 
+            # Efficacy parameters for susceptibility and transmissibility for each species type
+            if biosecurity_efficacy_s is None:
+                biosecurity_efficacy_s = [0.1, 0.1, 0.1]
+            self.biosecurity_efficacy_s = biosecurity_efficacy_s
+            if biosecurity_efficacy_t is None:
+                biosecurity_efficacy_t = [1, 1, 1]
+            self.biosecurity_efficacy_t = biosecurity_efficacy_t
+        else:
+            self.biosecurity_zone = None
+            self.biosecurity_time = None
+            self.biosecurity_efficacy_s = None
+            self.biosecurity_efficacy_t = None
+
+
         # Vaccine parameters
-        if intervention_type == "vaccine":
+        if "vaccine" in intervention_type.split('_'):
+
+            # Intervention start and end days are integers
+            if vaccine_start_day is None:
+                vaccine_start_day = 0
+            if not isinstance(vaccine_start_day, int):
+                raise ValueError("start_day start day must be an integer.")
+            self.vaccine_start_day = vaccine_start_day
+            if vaccine_end_day is None:
+                vaccine_end_day = np.inf
+            if not isinstance(vaccine_end_day, int) and vaccine_end_day != np.inf:
+                raise ValueError("Intervention end day must be an integer or inf.")
+            self.vaccine_end_day = vaccine_end_day
+
+            # Vaccine strategy, teams, and daily limits
             if vaccine_strategy is None:
-                vaccine_strategy = "ring_latest_3.0"
+                vaccine_strategy = "ring_random_3.0"
             if vaccine_strategy not in {"random", "bird_numbers", "bird_density", "farm_density", "case_density"}:
-                if not vaccine_strategy.startswith("ring_") and not vaccine_strategy.split('_')[1] not in {"random", "in", "out"} and not vaccine_strategy.split('_')[2].replace('.', '', 1).isdigit():
+                if not (vaccine_strategy.startswith("ring_") and vaccine_strategy.split('_')[1] in {"random", "in", "out"} and vaccine_strategy.split('_')[2].replace('.', '', 1).isdigit()):
                     raise ValueError("Vaccine strategy must be 'random', 'bird_numbers', 'bird_density', 'farm_density', 'case_density', or be of the form 'ring_<random/in/out>_<radius>'.")
             self.vaccine_strategy = vaccine_strategy
             if vaccine_teams is None:
                 vaccine_teams = 1
-            if not isinstance(vaccine_teams, int) or vaccine_teams <= 0:
-                raise ValueError("The number of vaccine teams must be a positive integer.")
+            if not isinstance(vaccine_teams, int) or vaccine_teams < 1:
+                raise ValueError("The number of vaccine teams must be at least one.")
             self.vaccine_teams = vaccine_teams
             if max_vaccinations_per_day is None:
                 max_vaccinations_per_day = 200000
@@ -1683,7 +2206,7 @@ class Intervention:
             if vaccine_regions is None:
                 vaccine_regions = np.arange(11)
             if isinstance(vaccine_regions, np.ndarray):
-                if (not np.issubdtype(vaccine_regions.dtype, np.integer)) or (not np.all((vaccine_regions >= 0) and (vaccine_regions <= 10))):
+                if (not np.issubdtype(vaccine_regions.dtype, np.integer)) or (not np.all((vaccine_regions >= 0) & (vaccine_regions <= 10))):
                     raise ValueError("The vaccine_regions elements must be integers between 0 and 10.")
             else:
                 raise ValueError("The vaccine_regions must be a numpy array of regions.")
@@ -1694,7 +2217,25 @@ class Intervention:
                 raise ValueError("The proportional change in time to notification must be a positive number.")
             self.vaccine_silent_transmission = vaccine_silent_transmission
 
-
+            # Efficacy parameters for susceptibility and transmissibility for each species type
+            if vaccine_efficacy_s is None:
+                vaccine_efficacy_s = [0.1, 0.1, 0.1]
+            self.vaccine_efficacy_s = vaccine_efficacy_s
+            if vaccine_efficacy_t is None:
+                vaccine_efficacy_t = [0.1, 0.1, 0.1]
+            self.vaccine_efficacy_t = vaccine_efficacy_t
+        else:
+            self.vaccine_strategy = None
+            self.vaccine_teams = None
+            self.max_vaccinations_per_day = None
+            self.max_distance_travelled = None
+            self.vaccine_delay = None
+            self.vaccine_birds = None
+            self.vaccine_proportion = None
+            self.vaccine_regions = None
+            self.vaccine_silent_transmission = None
+            self.vaccine_efficacy_s = None
+            self.vaccine_efficacy_t = None
 
 class Plotting:
     def __init__(self, model_fitting=None, model_simulator=None):
@@ -1757,7 +2298,7 @@ class Plotting:
         plt.fill_between(range(n_weeks), lower_ci, upper_ci, color='lightblue', alpha=0.5, label='95% Credible Interval')
         plt.plot(range(n_weeks), mean_ips, color='blue', label='Mean Weekly IPs')
 
-        plt.xlabel('Report Day')
+        plt.xlabel('Week of report')
         plt.ylabel('Weekly IPs')
         plt.show()
 

@@ -7,13 +7,13 @@ seed = 0
 np.random.seed(seed)
 
 # Choose options for running the model
-run_mcmc = False
-use_mcmc = True
-run_intervention = True
-run_projections = False
-use_projections = True
-sellke = True
-plots = True
+run_mcmc = False # Run an MCMC chain
+use_mcmc = True # Use posterior distributions from MCMC chains
+run_intervention = True # Include interventions in model projections
+run_projections = True  # Run model projections
+use_projections = True # Load previously saved model projections
+sellke = True # Use Sellke construction for model projections otherwise stochastic tau-leaping simulations
+plots = True # Generate plots
 
 # Define time period
 data_start = pd.to_datetime('2022-10-01')
@@ -29,7 +29,7 @@ data_paths = hpai_model.DataFilePaths(premises='../data/HPAI_Farm_Data_2_update2
 # Format data files into required format
 data_input = hpai_model.DataLoader(data_paths, data_start, data_end)
 
-# Get data structure for model
+# Get data structure for the model
 data = hpai_model.Data(data_input)
 print("Data loaded")
 
@@ -74,6 +74,7 @@ if run_projections or use_projections:
         else:
             vaccine = None
         modelsim.load_projections(intervention=vaccine)
+
     # Plot model projections
     if plots:
         modelplotting_sim = hpai_model.Plotting(model_simulator=modelsim)
