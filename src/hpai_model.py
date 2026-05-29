@@ -458,7 +458,8 @@ class Parameter:
     def log_values(self):
         """Return the log-transformed parameter values."""
         log_values = np.log(self.values)
-        log_values[self.prior_type == 'beta'] = np.log(self.values[self.prior_type == 'beta'] / (1 - self.values[self.prior_type == 'beta']))
+        prior_array_type = np.array(self.prior_type)
+        log_values[prior_array_type == 'beta'] = np.log(self.values[prior_array_type == 'beta'] / (1 - self.values[prior_array_type == 'beta']))
         return log_values
 
 class ParameterSet:
@@ -605,7 +606,7 @@ class ModelStructure:
                                ['gamma'], ['gamma'], ['beta'] * self.n_species, ['beta'] * self.n_species,
                                ['gamma'] * self.n_species, ['gamma'] * self.n_species, ['gamma', 'beta']]
         else:
-            self.parameter_check(par_fitted, 'par_fitted')
+            self.parameter_check(par_prior_type, 'par_prior_type')
         # Set prior parameter values
         if par_prior_values is None:
             par_prior_values = [np.array([[1, 1e-5]]),
@@ -677,14 +678,14 @@ class ModelStructure:
                 for element in input_list[i]:
                     if not isinstance(element, (int, float)):
                         raise TypeError(f"{name}[{i}] must be an array of numbers.")
-            if input_list[7][0] != 1 or input_list[8][0] != 1:
+            if input_list[6][0] != 1 or input_list[7][0] != 1:
                 raise ValueError(f"{name}: First component of xi or zeta must be 1.")
         elif name == 'par_fitted':
             for i in range(9):
                 for element in input_list[i]:
                     if not isinstance(element, bool):
                         raise TypeError(f"{name}[{i}] must be an array of booleans.")
-            if input_list[7][0] or input_list[7][1]:
+            if input_list[6][0] or input_list[7][1]:
                 raise ValueError(f"{name}: First component of xi or zeta must not be fitted.")
         elif name == 'par_prior_type':
             allowed_priors = {"gamma", "beta"}
@@ -947,9 +948,9 @@ class ModelFitting:
                                                     scale=self.model_structure.trans_priors_values[1]))
                     else:
                         proposal = (stats.gamma.pdf(old_transition, a=self.model_structure.trans_priors_values[0],
-                                                    scale=self.model_structure.trans_priors_values[0]) /
+                                                    scale=self.model_structure.trans_priors_values[1]) /
                                     stats.gamma.pdf(new_trans_times[i], a=self.model_structure.trans_priors_values[0],
-                                                    scale=self.model_structure.trans_priors_values[0]))
+                                                    scale=self.model_structure.trans_priors_values[1]))
                     self.non_fixed_transitions[update_idx] = new_trans_times[i]
 
                     # Calculate new posterior
