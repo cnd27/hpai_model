@@ -936,11 +936,11 @@ class ModelFitting:
                 if event == 0:
 
                     # Change time to notification
-                    update_idx = np.random.randint(0, self.n_cases)
+                    update_idx = np.random.randint(0, len(self.infected_premises))
                     old_transition = self.non_fixed_transitions[update_idx]
 
                     # Update transition time depending on if occult or not
-                    if update_idx > self.n_cases:
+                    if update_idx >= self.n_cases:
                         new_trans_times[i] = stats.truncnorm.rvs(-0.6567 / 8.17, np.inf, loc=0.6567, scale=8.17)
                         proposal = (stats.gamma.cdf(old_transition, a=self.model_structure.trans_priors_values[0],
                                                     scale=self.model_structure.trans_priors_values[1]) /
