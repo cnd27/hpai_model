@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
+from scipy.special import log_expit
 from scipy.spatial import cKDTree
 from sklearn.neighbors import KDTree
 import matplotlib.pyplot as plt
@@ -845,7 +846,7 @@ class ModelFitting:
                         if np.array(par.prior_type)[par.fitted][i] == 'gamma':
                             neg_log_jacobian = -new_log_value + old_log_value
                         else:
-                            neg_log_jacobian = -new_log_value + old_log_value - np.log(1 - new_value) + np.log(1 - old_value)
+                            neg_log_jacobian = -log_expit(new_log_value) - log_expit(-new_log_value) + log_expit(old_log_value) + log_expit(-old_log_value)
 
                         # Calculate new posterior
                         new_neg_log_likelihood = self.get_neg_log_likelihood()
