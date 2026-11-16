@@ -1196,6 +1196,10 @@ class ModelFitting:
                     log_like_2 += -gamma_1 * np.sum(decay_r)
                 log_like_2 += -gamma_0 * np.sum(beta_values * days_i)
                 log_like_2 += -gamma_1 * np.sum(beta_values * days_n)
+            start_day = self.end_day - len(season_times) + 1
+            cumulative_season_times = np.concatenate(([0], np.cumsum(season_times)))
+            days_susceptible = np.clip(self.exposure_day - start_day, 0, len(season_times)).astype(int)
+            all_season_times += np.sum(cumulative_season_times[days_susceptible])
             log_like_2 += -self.model_structure.parameters.epsilon.values[0] * all_season_times
 
             # Get likelihood of notification times
