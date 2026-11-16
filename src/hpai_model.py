@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
-from scipy.special import log_expit
+from scipy.special import expit, log_expit
 from scipy.spatial import cKDTree
 from sklearn.neighbors import KDTree
 import matplotlib.pyplot as plt
@@ -440,6 +440,7 @@ class Parameter:
         self.prior_pars = np.array(prior_pars, dtype=float)
         self.description = description
         self.sigma = np.array(sigma, dtype=float)
+        self.log_values = self.log_values
         self.mu = copy.deepcopy(self.log_values)
 
         # Validate prior types and shapes
@@ -460,7 +461,7 @@ class Parameter:
         """Return the log-transformed parameter values."""
         log_values = np.log(self.values)
         prior_array_type = np.array(self.prior_type)
-        log_values[prior_array_type == 'beta'] = np.log(self.values[prior_array_type == 'beta'] / (1 - self.values[prior_array_type == 'beta']))
+        log_values[prior_array_type == 'beta'] = np.log(self.values[prior_array_type == 'beta']) - np.log1p(-self.values[prior_array_type == 'beta'])
         return log_values
 
 class ParameterSet:
@@ -686,7 +687,7 @@ class ModelStructure:
                 for element in input_list[i]:
                     if not isinstance(element, bool):
                         raise TypeError(f"{name}[{i}] must be an array of booleans.")
-            if input_list[6][0] or input_list[7][1]:
+            if input_list[6][0] or input_list[7][0]:
                 raise ValueError(f"{name}: First component of xi or zeta must not be fitted.")
         elif name == 'par_prior_type':
             allowed_priors = {"gamma", "beta"}
@@ -814,7 +815,7 @@ class ModelFitting:
         accept = 0
         accept_notification = np.zeros(3)
         update_notification = np.zeros(3)
-        current_neg_log_post = self.get_neg_log_likelihood()
+        current_neg_log_post = self.get_neg_log_likelihood() + self.get_neg_log_prior()
 
         # Save initial state to the first entry in the chain
         self.update_chain(current_neg_log_post)
@@ -886,7 +887,7 @@ class ModelFitting:
                         if np.array(par.prior_type)[par.fitted][i] == 'gamma':
                             neg_log_jacobian += -new_log_value[i] + old_log_value[i]
                         elif np.array(par.prior_type)[par.fitted][i] == 'beta':
-                            neg_log_jacobian += -new_log_value[i] + old_log_value[i] - np.log(1 - new_value[i]) + np.log(1 - old_value[i])
+                            neg_log_jacobian += -log_expit(new_log_value[i]) - log_expit(-new_log_value[i]) + log_expit(old_log_value[i]) + log_expit(-old_log_value[i])
 
                 # Calculate new posterior after all parameters changed
                 new_neg_log_likelihood = self.get_neg_log_likelihood()
@@ -1189,7 +1190,7 @@ class ModelFitting:
                 days_n[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i]), 0, t2)
                 if self.model_structure.parameters.rho is not None:
                     days_r = np.full(self.model_structure.n_premises, self.model_structure.data.end_day - (self.report_day[i] + t2))
-                    days_r[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i] + t2), 0, self.model_structure.data.end_day - (self.report_day[i] + t0))
+                    days_r[self.infected_premises] = np.clip(self.exposure_day - (self.report_day[i] + t2), 0, self.model_structure.data.end_day - (self.report_day[i] + t2))
                     decay_r = beta_values[:, np.newaxis] * np.exp(-self.model_structure.parameters.rho.values * np.arange(self.report_day[i] + t2, self.end_day + 1)[np.newaxis, :])
                     cols = np.arange(decay_r.shape[1])  # shape (20,)
                     mask = cols[None, :] > days_r[:, None]
@@ -1255,8 +1256,12 @@ class ModelFitting:
     def get_exp(self, values, exp_type):
         """Get the exponentiated values based on prior type."""
         # Reverse log transform for gamma and logit transform for beta
-        exp_values = np.exp(values)
-        exp_values[exp_type == 'beta'] = exp_values[exp_type == 'beta'] / (1 + exp_values[exp_type == 'beta'])
+        values = np.asarray(values)
+        exp_type = np.asarray(exp_type)
+        exp_values = np.empty_like(values, dtype=float)
+        beta_mask = exp_type == 'beta'
+        exp_values[beta_mask] = expit(values[beta_mask])
+        exp_values[~beta_mask] = np.exp(values[~beta_mask])
         return exp_values
 
 class ModelSimulator:
@@ -1350,7 +1355,6 @@ class ModelSimulator:
             self.cumulative_hazard = np.zeros(self.model_structure.n_premises)
         else:
             self.post_idx = np.random.choice(range(self.parameter_posterior.shape[0]), size=self.reps, replace=True)
-            self.post_idx[0] = 405
 
     def run_model(self, save_results=True, intervention=None):
         """Run the infection model simulation."""
